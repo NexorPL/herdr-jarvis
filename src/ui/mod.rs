@@ -1,5 +1,6 @@
 pub mod app;
 pub mod theme;
+pub mod views;
 
 #[cfg(test)]
 pub(crate) fn render(w: u16, h: u16, draw: impl FnOnce(&mut ratatui::Frame)) -> String {
