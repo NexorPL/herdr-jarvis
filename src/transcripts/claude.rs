@@ -16,8 +16,11 @@ struct FileState {
     len: u64,
     offset: u64,
     /// Claude Code writes one line per content block, each repeating the message's usage.
-    /// ponytail: duplicates are consecutive, so remembering the last id is enough; a full id set if that changes.
+    /// ponytail: copies are consecutive (verified on real transcripts), so the last id is enough.
     last_message_id: Option<String>,
+    /// Day, model and usage counted for `last_message_id`.
+    #[serde(default)]
+    last_usage: Option<(String, String, Usage)>,
     #[serde(default)]
     bad_lines: u64,
     thread: Thread,
@@ -207,8 +210,14 @@ fn apply_line(state: &mut FileState, line: &str) {
                 t.last_reply = Some(snippet(&text));
             }
             let id = msg["id"].as_str().map(str::to_string);
+            // Copies of one message repeat its usage, and later copies carry the final output count:
+            // replace the previous copy's contribution instead of adding to it.
             if id.is_some() && id == state.last_message_id {
-                return;
+                if let Some((day, model, prev)) = state.last_usage.take() {
+                    if let Some(u) = t.usage.get_mut(&day).and_then(|m| m.get_mut(&model)) {
+                        *u -= prev;
+                    }
+                }
             }
             state.last_message_id = id;
             let (Some(model), Some(ts)) = (msg["model"].as_str(), timestamp(&v)) else {
@@ -218,11 +227,13 @@ fn apply_line(state: &mut FileState, line: &str) {
             if usage.total() == 0 {
                 return;
             }
+            let day = local_day(ts);
             *t.usage
-                .entry(local_day(ts))
+                .entry(day.clone())
                 .or_default()
                 .entry(model.to_string())
                 .or_default() += usage;
+            state.last_usage = Some((day, model.to_string(), usage));
         }
         _ => {}
     }
@@ -438,6 +449,26 @@ mod tests {
         let day = &t.usage[&local_day(ts("2026-10-08T10:00:05Z"))];
         assert_eq!(day["claude-sonnet-5"].input, 5 + 7);
         assert_eq!(day["claude-sonnet-5"].output, 50 + 70);
+    }
+
+    #[test]
+    fn streamed_copies_keep_the_final_usage() {
+        let line = |out: u32| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"msg_9","model":"claude-sonnet-5","content":[],"usage":{{"input_tokens":5,"output_tokens":{out}}}}},"timestamp":"2026-10-08T10:00:05.000Z","cwd":"/home/u/alpha"}}"#
+            )
+        };
+        let (tmp, claude, file) = setup(&format!("{}\n", line(100)));
+        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        src.refresh();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(f, "{}", line(300)).unwrap();
+        let t = &src.refresh()[0];
+        let u = t.usage[&local_day(ts("2026-10-08T10:00:05Z"))]["claude-sonnet-5"];
+        assert_eq!((u.input, u.output), (5, 300));
     }
 
     #[test]

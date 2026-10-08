@@ -27,6 +27,16 @@ impl std::ops::AddAssign for Usage {
     }
 }
 
+impl std::ops::SubAssign for Usage {
+    fn sub_assign(&mut self, o: Usage) {
+        self.input = self.input.saturating_sub(o.input);
+        self.output = self.output.saturating_sub(o.output);
+        self.cache_read = self.cache_read.saturating_sub(o.cache_read);
+        self.cache_write_5m = self.cache_write_5m.saturating_sub(o.cache_write_5m);
+        self.cache_write_1h = self.cache_write_1h.saturating_sub(o.cache_write_1h);
+    }
+}
+
 /// USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Price {

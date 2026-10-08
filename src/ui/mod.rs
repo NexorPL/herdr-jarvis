@@ -125,7 +125,7 @@ pub fn run() -> anyhow::Result<()> {
     let watch = herdr::watcher::spawn(herdr::socket_path());
     let claude = config
         .claude_dir()
-        .map(|dir| ClaudeSource::new(&dir, state.join("claude-index.json")));
+        .map(|dir| ClaudeSource::new(&dir, state.join("claude-index-v2.json")));
     let sources = spawn_sources(
         claude,
         events::Log::new(state.clone()),
