@@ -356,3 +356,10 @@ README suggests binding `jarvis.open` to `prefix+j`.
 - Sending prompts / answering blocked agents from Jarvis.
 - Notifications when an agent blocks.
 - Web dashboard reusing the same data modules.
+- **Idea list (todo) per project.** A plain list of ideas, each a `name` and a `description`:
+  - In an agent's drill-down (Agents tab, selected agent) there is an ideas panel: add, edit and delete
+    entries right there, in the context of that agent. Entries belong to the agent's project (agents come
+    and go; the ideas stay with the project).
+  - The global view shows every idea from every project in one list, each row labelled with its project,
+    so it is clear which project an idea is for.
+  - Stored as local plain data in the plugin state directory; nothing leaves the machine.
