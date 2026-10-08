@@ -385,7 +385,6 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Esc => self.quit = true,
             KeyCode::Enter => self.open_selected(),
             KeyCode::Char(c @ '1'..='9') => {
                 let i = c as usize - '1' as usize;
@@ -561,7 +560,10 @@ mod tests {
         assert_eq!(app.screen, Screen::Global(Tab::Threads));
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.screen, Screen::Core);
+        // Jarvis stays open as a tab: Esc on the core does nothing, only q quits.
         key(&mut app, KeyCode::Esc);
+        assert!(!app.quit);
+        key(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
     }
 

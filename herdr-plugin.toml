@@ -28,5 +28,5 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "jarvis", "--entrypoin
 [[panes]]
 id = "core"
 title = "Jarvis"
-placement = "overlay"
+placement = "tab"
 command = ["./target/release/jarvis", "tui"]

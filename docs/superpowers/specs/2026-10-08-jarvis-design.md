@@ -159,7 +159,9 @@ Tabs switch with `1`–`4` / `Tab`. They are the same four views as the global o
 
 ### 5.5 Actions on rows
 
-- `Enter` on a live agent: focus its pane via the herdr API and close the overlay.
+- `Enter` on a live agent: focus its pane via the herdr API. Jarvis stays open in its own tab (it is the
+  operator's home base, not a transient overlay); only `q` closes it. Opening Jarvis again while one is
+  running jumps to the running one instead of starting a second instance.
 - `Enter` on a finished thread: show `claude --resume <sessionId>` and copy it to the clipboard when a clipboard
   is available; otherwise only show it.
 - `/` search, `f` project filter (global views), `r` refresh.
@@ -282,7 +284,7 @@ command = ["herdr", "plugin", "pane", "open", "--plugin", "jarvis", "--entrypoin
 [[panes]]
 id = "core"
 title = "Jarvis"
-placement = "overlay"
+placement = "tab"
 command = ["./target/release/jarvis", "tui"]
 ```
 

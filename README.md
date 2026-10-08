@@ -1,7 +1,7 @@
 # Jarvis
 
-**Mission control for [herdr](https://herdr.dev).** One keypress opens a full-screen overlay with an
-animated core: every project with herdr activity branches out of it, showing which agents are working,
+**Mission control for [herdr](https://herdr.dev).** One keypress opens Jarvis in its own tab, and it stays
+open while you work. Its animated core: every project with herdr activity branches out of it, showing which agents are working,
 which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
 event timeline and token cost.
 
@@ -16,7 +16,8 @@ herdr plugin install NexorPL/herdr-jarvis
 The install step downloads a prebuilt, SHA-256-verified binary for your platform and falls back to
 `cargo build --release` (Rust from https://rustup.rs) when none matches.
 
-Open it with the `Open Jarvis` action, or bind a key in herdr's `config.toml`:
+Open it with the `Open Jarvis` action, or bind a key in herdr's `config.toml`. If Jarvis is already open,
+the same key jumps to its tab instead of starting a second one:
 
 ```toml
 [[keys.command]]
@@ -43,9 +44,9 @@ timeline, without threads or cost.
 | Where | Keys |
 |---|---|
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` all-project views |
-| Lists | `↑↓` / `jk` move · `Enter` jump to pane, or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`4` switch views |
+| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`4` switch views |
 | Filters | `/` search threads · `s` state · `w` time range (timeline) · `f` project (all-project views) |
-| Anywhere | `Esc` back · `r` refresh · `?` help · `q` quit |
+| Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
 ## Configuration
 

@@ -17,8 +17,9 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
+use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -115,6 +116,20 @@ fn spawn_sources(
     rx
 }
 
+/// One Jarvis per state dir: the first holds `tui.lock` for its lifetime and records its pane;
+/// any later one gets that pane id instead.
+fn claim_instance(state: &Path, my_pane: &str) -> std::io::Result<Result<File, String>> {
+    match collector::try_lock(&state.join("tui.lock"))? {
+        Some(lock) => {
+            std::fs::write(state.join("tui.pane"), my_pane)?;
+            Ok(Ok(lock))
+        }
+        None => Ok(Err(
+            std::fs::read_to_string(state.join("tui.pane")).unwrap_or_default()
+        )),
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     let config = Config::load(&paths::config_dir());
     if let Err(e) = collector::ensure_running() {
@@ -122,6 +137,18 @@ pub fn run() -> anyhow::Result<()> {
     }
     let state = paths::state_dir();
     std::fs::create_dir_all(&state)?;
+    let my_pane = std::env::var("HERDR_PANE_ID").unwrap_or_default();
+    let _instance = match claim_instance(&state, &my_pane)? {
+        Ok(lock) => lock,
+        // Jarvis is already open: jump to it. herdr closes this new tab when we exit, so focus
+        // from a detached process once that is done.
+        Err(pane) => {
+            if !pane.is_empty() {
+                collector::spawn_detached(&["focus", &pane])?;
+            }
+            return Ok(());
+        }
+    };
     let watch = herdr::watcher::spawn(herdr::socket_path());
     let claude = config
         .claude_dir()
@@ -196,11 +223,11 @@ fn event_loop(
             }
         }
         match app.action.take() {
-            // The overlay restores the previous focus when it closes, so focus from a detached
-            // process after the overlay is gone.
+            // Jarvis stays open in its own tab; the agent's pane takes the focus.
             Some(Action::FocusPane(id)) => {
-                collector::spawn_detached(&["focus", &id])?;
-                app.quit = true;
+                if let Err(e) = herdr::focus_pane(&herdr::socket_path(), &id) {
+                    app.status = Some(format!("could not focus {id}: {e}"));
+                }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
             None => {}
@@ -282,6 +309,19 @@ mod tests {
         assert_eq!(base64(b"claude"), "Y2xhdWRl");
         assert_eq!(base64(b"ab"), "YWI=");
         assert_eq!(base64(b"a"), "YQ==");
+    }
+
+    #[test]
+    fn second_jarvis_gets_the_first_ones_pane() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = claim_instance(tmp.path(), "w8:p3").unwrap();
+        assert!(first.is_ok());
+        assert_eq!(
+            claim_instance(tmp.path(), "w9:p1").unwrap().unwrap_err(),
+            "w8:p3"
+        );
+        drop(first);
+        assert!(claim_instance(tmp.path(), "w9:p1").unwrap().is_ok());
     }
 
     #[test]
