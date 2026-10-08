@@ -1,0 +1,32 @@
+# herdr-plugin.toml — Jarvis: mission control for herdr.
+id = "jarvis"
+name = "Jarvis"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Mission control for herdr: animated big-picture core, projects by path, threads, timeline and token usage."
+platforms = ["linux", "macos", "windows"]
+
+# Fetch the release binary for this platform (SHA-256 verified); build from source on any miss.
+[[build]]
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
+
+# One-shot: starts the timeline collector detached, then exits.
+[[startup]]
+command = ["./target/release/jarvis", "ensure-collector"]
+
+[[actions]]
+id = "open"
+title = "Open Jarvis"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "jarvis", "--entrypoint", "core", "--focus"]
+
+[[panes]]
+id = "core"
+title = "Jarvis"
+placement = "tab"
+command = ["./target/release/jarvis", "tui"]
