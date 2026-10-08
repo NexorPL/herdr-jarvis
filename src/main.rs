@@ -1,4 +1,5 @@
 mod config;
+mod events;
 mod herdr;
 mod log;
 mod paths;
