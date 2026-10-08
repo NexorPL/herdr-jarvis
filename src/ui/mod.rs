@@ -91,17 +91,26 @@ fn spawn_sources(
     lock: PathBuf,
 ) -> Receiver<SourceUpdate> {
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || loop {
-        let now = chrono::Utc::now();
-        let update = SourceUpdate {
-            threads: claude.as_mut().map(|c| c.refresh()).unwrap_or_default(),
-            records: store.read_since(now - chrono::Duration::days(7), now),
-            collector_running: collector::is_running(&lock),
+    std::thread::spawn(move || {
+        let read = |threads: Vec<Thread>| {
+            let now = chrono::Utc::now();
+            SourceUpdate {
+                threads,
+                records: store.read_since(now - chrono::Duration::days(7), now),
+                collector_running: collector::is_running(&lock),
+            }
         };
-        if tx.send(update).is_err() {
+        // Timeline and collector status first: the first transcript index can take a while.
+        if tx.send(read(Vec::new())).is_err() {
             return;
         }
-        std::thread::sleep(Duration::from_secs(2));
+        loop {
+            let threads = claude.as_mut().map(|c| c.refresh()).unwrap_or_default();
+            if tx.send(read(threads)).is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
     });
     rx
 }
@@ -153,6 +162,7 @@ fn event_loop(
             }
         }
         if let Some(u) = sources.try_iter().last() {
+            app.collector_running = u.collector_running;
             update = u;
             dirty = true;
         }
@@ -171,7 +181,6 @@ fn event_loop(
                 &mut resolver,
                 &today,
             );
-            app.collector_running = update.collector_running;
             app.clamp();
             dirty = false;
         }
@@ -273,5 +282,30 @@ mod tests {
         assert_eq!(base64(b"claude"), "Y2xhdWRl");
         assert_eq!(base64(b"ab"), "YWI=");
         assert_eq!(base64(b"a"), "YQ==");
+    }
+
+    #[test]
+    fn sources_report_timeline_and_collector_before_the_transcript_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("claude/projects/-home-u-alpha");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sess-a.jsonl"),
+            include_str!("../../tests/fixtures/claude-session.jsonl"),
+        )
+        .unwrap();
+        let lock = tmp.path().join("collector.lock");
+        let _held = collector::try_lock(&lock).unwrap();
+        let claude = ClaudeSource::new(&tmp.path().join("claude"), tmp.path().join("index.json"));
+        let rx = spawn_sources(
+            Some(claude),
+            events::Log::new(tmp.path().to_path_buf()),
+            lock,
+        );
+        let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(first.threads.is_empty());
+        assert!(first.collector_running);
+        let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(second.threads.len(), 1);
     }
 }
