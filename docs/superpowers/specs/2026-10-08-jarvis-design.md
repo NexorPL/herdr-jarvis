@@ -328,6 +328,18 @@ README suggests binding `jarvis.open` to `prefix+j`.
    because `pane.updated` is always part of the subscription. Timeline records come from **diffing consecutive
    snapshots**, not from interpreting each event type.
 
+### Verified on herdr 0.9.3 / Windows 11 (plugin linked locally)
+
+1. `herdr plugin link` accepts the manifest; `jarvis.open` is listed.
+2. `plugin pane open --entrypoint core` (as a split) starts `./target/release/jarvis tui` from the plugin root and
+   renders the core view with real projects; Threads and Usage show live Claude Code data.
+3. `q` exits, restores the terminal, and herdr closes the pane.
+4. The TUI's `ensure-collector` starts a detached collector that survives the pane closing; a second `ensure`
+   does not start a duplicate.
+5. Both build scripts fall back to `cargo build --release` when no release exists.
+6. Not yet verified (needs a person at the keyboard): the action as an overlay, `Enter` focusing a pane in another
+   workspace after the overlay closes, and `[[startup]]` starting the collector after a herdr server restart.
+
 ## 11. Distribution
 
 - License: MIT.
