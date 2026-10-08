@@ -1,0 +1,136 @@
+//! `jarvis collect` records the timeline while the overlay is closed.
+//! herdr's `[[startup]]` hook is one-shot, so `ensure-collector` spawns it detached and exits.
+
+use crate::config::Config;
+use crate::herdr::{self, WatchMsg};
+use crate::log::log;
+use crate::{events, paths};
+use std::fs::File;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const GIVE_UP_AFTER: Duration = Duration::from_secs(600);
+
+pub fn run() -> anyhow::Result<()> {
+    let state = paths::state_dir();
+    std::fs::create_dir_all(&state)?;
+    let Some(_lock) = try_lock(&state.join("collector.lock"))? else {
+        return Ok(()); // another collector is running
+    };
+    let config = Config::load(&paths::config_dir());
+    let store = events::Log::new(state);
+    store.prune(config.retention_days, chrono::Utc::now().date_naive());
+    let mut prev: Option<herdr::Snapshot> = None;
+    let mut offline_since: Option<Instant> = None;
+    for msg in herdr::watcher::spawn(herdr::socket_path()) {
+        match msg {
+            WatchMsg::Snapshot(next) => {
+                offline_since = None;
+                if let Some(p) = &prev {
+                    let records = events::diff(p, &next, chrono::Utc::now());
+                    if let Err(e) = store.append(&records) {
+                        log(format!("collector: append failed: {e}"));
+                    }
+                }
+                prev = Some(next);
+            }
+            WatchMsg::Offline(reason) => {
+                if offline_since.get_or_insert_with(Instant::now).elapsed() > GIVE_UP_AFTER {
+                    log(format!(
+                        "collector: herdr unreachable for 10 minutes ({reason}); exiting"
+                    ));
+                    break;
+                }
+            }
+            WatchMsg::Incompatible(reason) => {
+                log(format!("collector: {reason}"));
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Starts a detached collector unless one already holds the lock.
+pub fn ensure_running() -> anyhow::Result<()> {
+    let state = paths::state_dir();
+    std::fs::create_dir_all(&state)?;
+    if is_running(&state.join("collector.lock")) {
+        return Ok(());
+    }
+    spawn_detached(&["collect"])
+}
+
+/// Holds an exclusive lock for the life of the returned file; `None` when another process holds it.
+pub fn try_lock(path: &Path) -> std::io::Result<Option<File>> {
+    let file = File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// ponytail: probes by taking the lock for an instant; a collector starting in that instant exits
+/// and the next overlay open restarts it. A pid file if this ever shows up in practice.
+pub fn is_running(lock: &Path) -> bool {
+    matches!(try_lock(lock), Ok(None))
+}
+
+/// Runs this executable with `args`, detached from the caller's terminal and process group.
+pub fn spawn_detached(args: &[&str]) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let command = || {
+        let mut c = Command::new(&exe);
+        c.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        c
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        // Breaking away from herdr's job object keeps the collector alive; not every job allows it.
+        if command()
+            .creation_flags(base | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .is_err()
+        {
+            command().creation_flags(base).spawn()?;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command().process_group(0).spawn()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_is_exclusive_until_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collector.lock");
+        let held = try_lock(&path).unwrap();
+        assert!(held.is_some());
+        assert!(try_lock(&path).unwrap().is_none());
+        assert!(is_running(&path));
+        drop(held);
+        assert!(!is_running(&path));
+        assert!(try_lock(&path).unwrap().is_some());
+    }
+}

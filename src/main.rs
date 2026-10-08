@@ -1,3 +1,4 @@
+mod collector;
 mod config;
 mod events;
 mod herdr;
@@ -11,6 +12,8 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next();
     match cmd.as_deref().unwrap_or("tui") {
+        "collect" => collector::run(),
+        "ensure-collector" => collector::ensure_running(),
         "--version" | "-V" => {
             println!("jarvis {}", env!("CARGO_PKG_VERSION"));
             Ok(())
