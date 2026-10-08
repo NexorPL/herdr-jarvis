@@ -3,6 +3,7 @@ mod herdr;
 mod log;
 mod paths;
 mod pricing;
+mod projects;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
