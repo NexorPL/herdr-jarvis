@@ -201,7 +201,7 @@ files are deleted on collector start.
 ### 6.3 Claude Code transcripts
 
 - Location: `~/.claude/projects/<encoded-path>/<sessionId>.jsonl` (respect `CLAUDE_CONFIG_DIR` if set).
-- Index: `STATE_DIR/claude-index.json`, per file `{mtime, size, offset, session_id, title, cwd, branch, turns,
+- Index: `STATE_DIR/claude-index-v2.json`, per file `{mtime, size, offset, session_id, title, cwd, branch, turns,
   first_ts, last_ts, usage[day][model]}`. On TUI start, only bytes after `offset` are read; if a file shrank, it
   is re-read from the start. While the overlay is open, files of live sessions are re-read when they change.
 - Fields used: `type == "ai-title"` → `aiTitle`; `type == "user"` / `"assistant"` → turns, `timestamp`, `cwd`,
