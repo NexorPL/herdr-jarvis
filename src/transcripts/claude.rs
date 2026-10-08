@@ -54,30 +54,70 @@ impl ClaudeSource {
         if self.dirty {
             self.save();
         }
-        self.files
-            .values()
-            .map(|f| f.thread.clone())
+        // Subagent transcripts only add usage and activity to their parent session.
+        let mut threads: HashMap<String, Thread> = HashMap::new();
+        let mut subagents = Vec::new();
+        for (path, f) in &self.files {
+            if is_subagent(Path::new(path)) {
+                subagents.push(&f.thread);
+            } else {
+                threads.insert(f.thread.session_id.clone(), f.thread.clone());
+            }
+        }
+        for sub in subagents {
+            let Some(t) = threads.get_mut(&sub.session_id) else {
+                continue;
+            };
+            t.last_ts = t.last_ts.max(sub.last_ts);
+            for (day, models) in &sub.usage {
+                for (model, u) in models {
+                    *t.usage
+                        .entry(day.clone())
+                        .or_default()
+                        .entry(model.clone())
+                        .or_default() += *u;
+                }
+            }
+        }
+        threads
+            .into_values()
             .filter(|t| t.first_ts.is_some())
             .collect()
     }
 
-    /// ponytail: top-level session files only; subagent transcripts in nested dirs are not counted yet.
+    /// `<project>/<session>.jsonl` plus `<project>/<session>/subagents/*.jsonl`.
     fn transcript_files(&self) -> Vec<PathBuf> {
-        let Ok(dirs) = std::fs::read_dir(&self.projects_dir) else {
-            return Vec::new();
+        let list = |dir: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .collect()
         };
-        dirs.flatten()
-            .filter(|d| d.path().is_dir())
-            .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-            .collect()
+        let jsonl = |p: &PathBuf| p.extension().is_some_and(|x| x == "jsonl");
+        let mut files = Vec::new();
+        for project in list(&self.projects_dir).into_iter().filter(|p| p.is_dir()) {
+            for entry in list(&project) {
+                if entry.is_dir() {
+                    files.extend(list(&entry.join("subagents")).into_iter().filter(jsonl));
+                } else if jsonl(&entry) {
+                    files.push(entry);
+                }
+            }
+        }
+        files
     }
 
     fn refresh_file(&mut self, path: &Path) -> std::io::Result<()> {
         let len = std::fs::metadata(path)?.len();
-        let stem = path
-            .file_stem()
+        let session = if is_subagent(path) {
+            path.parent().and_then(Path::parent)
+        } else {
+            Some(path)
+        };
+        let stem = session
+            .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let fresh = || FileState {
@@ -125,6 +165,12 @@ impl ClaudeSource {
         }
         self.dirty = false;
     }
+}
+
+fn is_subagent(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|n| n == "subagents")
 }
 
 /// Local calendar day of a timestamp, `YYYY-MM-DD`.
@@ -366,6 +412,32 @@ mod tests {
         let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
         src.refresh();
         assert_eq!(src.files.values().map(|f| f.bad_lines).sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn subagent_usage_merges_into_parent_session() {
+        let (tmp, claude, _) = setup(FIXTURE);
+        let sub = claude.join("projects/-home-u-alpha/sess-a/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("agent-1.jsonl"),
+            concat!(
+                r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"Explore"},"timestamp":"2026-10-08T10:03:00.000Z","cwd":"/home/u/alpha","sessionId":"sess-a"}"#,
+                "\n",
+                r#"{"type":"assistant","isSidechain":true,"message":{"id":"msg_s1","model":"claude-sonnet-5","content":[{"type":"text","text":"found it"}],"usage":{"input_tokens":7,"output_tokens":70}},"timestamp":"2026-10-08T10:03:30.000Z","cwd":"/home/u/alpha","sessionId":"sess-a"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let threads = src.refresh();
+        assert_eq!(threads.len(), 1);
+        let t = &threads[0];
+        assert_eq!(t.turns, 2);
+        assert_eq!(t.last_reply.as_deref(), Some("Done: parser fixed."));
+        let day = &t.usage[&local_day(ts("2026-10-08T10:00:05Z"))];
+        assert_eq!(day["claude-sonnet-5"].input, 5 + 7);
+        assert_eq!(day["claude-sonnet-5"].output, 50 + 70);
     }
 
     #[test]
