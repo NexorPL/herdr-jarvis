@@ -352,7 +352,4 @@ README suggests binding `jarvis.open` to `prefix+j`.
 
 ## 12. Future (explicitly out of v1)
 
-- Transcript adapters: Codex, OpenCode, Pi.
-- Sending prompts / answering blocked agents from Jarvis.
-- Notifications when an agent blocks.
-- Web dashboard reusing the same data modules.
+Planned work lives in GitHub issues: https://github.com/NexorPL/herdr-jarvis/issues?q=label%3Aenhancement
