@@ -3,6 +3,7 @@ mod config;
 mod events;
 mod herdr;
 mod log;
+mod model;
 mod paths;
 mod pricing;
 mod projects;
