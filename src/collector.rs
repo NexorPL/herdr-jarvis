@@ -15,7 +15,7 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(600);
 pub fn run() -> anyhow::Result<()> {
     let state = paths::state_dir();
     std::fs::create_dir_all(&state)?;
-    let Some(_lock) = try_lock(&state.join("collector.lock"))? else {
+    let Some(_lock) = lock_with_retry(&state.join("collector.lock"))? else {
         return Ok(()); // another collector is running
     };
     let config = Config::load(&paths::config_dir());
@@ -76,8 +76,19 @@ pub fn try_lock(path: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
-/// ponytail: probes by taking the lock for an instant; a collector starting in that instant exits
-/// and the next overlay open restarts it. A pid file if this ever shows up in practice.
+/// A starting collector retries for ~1 s, so an instant `is_running` probe from the TUI cannot
+/// make it give up; a real running collector still holds the lock after that.
+fn lock_with_retry(path: &Path) -> std::io::Result<Option<File>> {
+    for _ in 0..10 {
+        if let Some(lock) = try_lock(path)? {
+            return Ok(Some(lock));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(None)
+}
+
+/// Probes by taking the lock for an instant; `lock_with_retry` makes that safe for a starting collector.
 pub fn is_running(lock: &Path) -> bool {
     matches!(try_lock(lock), Ok(None))
 }
@@ -132,5 +143,18 @@ mod tests {
         drop(held);
         assert!(!is_running(&path));
         assert!(try_lock(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn startup_lock_survives_a_brief_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collector.lock");
+        let probe = try_lock(&path).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(probe);
+        });
+        assert!(lock_with_retry(&path).unwrap().is_some());
+        release.join().unwrap();
     }
 }
