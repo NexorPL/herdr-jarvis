@@ -4,6 +4,7 @@ mod log;
 mod paths;
 mod pricing;
 mod projects;
+mod transcripts;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
