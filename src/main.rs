@@ -8,6 +8,7 @@ mod paths;
 mod pricing;
 mod projects;
 mod transcripts;
+mod ui;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
