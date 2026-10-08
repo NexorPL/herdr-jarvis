@@ -30,10 +30,6 @@ impl Counts {
     pub fn active(&self) -> usize {
         self.blocked + self.done + self.working
     }
-
-    pub fn total(&self) -> usize {
-        self.active() + self.idle
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -457,7 +453,7 @@ mod tests {
         let m = model();
         let names: Vec<&str> = m.projects.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["beta", "alpha", "gamma"]);
-        assert_eq!(m.projects[2].counts.total(), 0);
+        assert_eq!(m.projects[2].counts, Counts::default());
     }
 
     #[test]
