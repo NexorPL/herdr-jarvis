@@ -14,8 +14,16 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next();
     match cmd.as_deref().unwrap_or("tui") {
+        "tui" => ui::run(),
         "collect" => collector::run(),
         "ensure-collector" => collector::ensure_running(),
+        "focus" => {
+            let pane = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("usage: jarvis focus <pane_id>"))?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            herdr::focus_pane(&herdr::socket_path(), &pane)
+        }
         "--version" | "-V" => {
             println!("jarvis {}", env!("CARGO_PKG_VERSION"));
             Ok(())
