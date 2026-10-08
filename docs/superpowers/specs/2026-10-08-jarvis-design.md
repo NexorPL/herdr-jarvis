@@ -186,14 +186,17 @@ Tabs switch with `1`–`4` / `Tab`. They are the same four views as the global o
 One JSON object per line in `STATE_DIR/events-YYYY-MM-DD.jsonl`:
 
 ```json
-{"ts":"2026-10-08T14:31:02Z","event":"pane.agent_status_changed","pane_id":"w6:pG","workspace_id":"w6",
+{"ts":"2026-10-08T14:31:02Z","kind":"status","pane_id":"w6:pG","workspace_id":"w6",
  "cwd":"/home/me/factory-game","agent":"claude","from":"working","to":"done","session_id":"3c0e…"}
 ```
 
-Subscribed events: `pane.agent_status_changed`, `pane.agent_detected`, `pane.created`, `pane.closed`,
-`pane.exited`, `workspace.created`, `workspace.closed`, `worktree.created`, `worktree.removed`. Fields the event
-does not carry (e.g. `cwd`) are filled from the collector's last known snapshot. Retention: 30 days by default
-(`retention_days` in config); old files are deleted on collector start.
+Records come from diffing consecutive snapshots (§10): `kind` is `status` (an agent's status changed; `from`
+and `to` set), `agent_appeared` (a pane gained an agent), or `agent_gone` (an agent pane closed or released its
+agent). Workspace-level changes are not recorded in v1; the project tree shows the live state. Subscribed event
+types: `pane.updated`, `pane.created`, `pane.closed`, `pane.exited`, `pane.agent_detected`,
+`workspace.created`, `workspace.closed`, `worktree.created`, `worktree.removed`, plus
+`pane.agent_status_changed` per agent pane. Retention: 30 days by default (`retention_days` in config); old
+files are deleted on collector start.
 
 ### 6.3 Claude Code transcripts
 
@@ -210,8 +213,10 @@ does not carry (e.g. `cwd`) are filled from the collector's last known snapshot.
 
 ### 6.4 Pricing
 
-Default table (per million tokens, by model id prefix) compiled in; `config.toml` `[pricing."<model>"]` overrides
-`input`, `output`, `cache_read`, `cache_write`. Costs are labelled as estimates.
+Default table (USD per million tokens, longest model-id prefix wins) compiled in, from Anthropic first-party rates;
+cache writes are priced separately for 5-minute and 1-hour TTLs (Claude Code reports both under
+`usage.cache_creation`). `config.toml` `[pricing."<model>"]` overrides `input`, `output`, `cache_read`,
+`cache_write_5m`, `cache_write_1h` (all five required). Costs are labelled as estimates.
 
 ### 6.5 Config file
 
@@ -227,7 +232,8 @@ claude_dir = "~/.claude"  # overrides default / CLAUDE_CONFIG_DIR
 input = 0.0
 output = 0.0
 cache_read = 0.0
-cache_write = 0.0
+cache_write_5m = 0.0
+cache_write_1h = 0.0
 ```
 
 (Pricing values above are placeholders for the format; real defaults ship in the binary.)
@@ -238,7 +244,7 @@ cache_write = 0.0
 |---|---|
 | Corrupt JSONL line | Skip, count in log, continue |
 | No Claude directory | Threads/Usage show "no Claude Code data"; other views work |
-| Collector not running | Timeline shows data from TUI start only, with a warning |
+| Collector not running | The TUI starts it on open; if it is still not running, Timeline shows a warning that changes are not being recorded |
 | herdr socket lost | Reconnect every 5 s, "herdr offline" in status bar, last state stays visible (dimmed) |
 | Protocol ≠ 22 | Clear message with versions, exit |
 | Panic in TUI | Panic hook restores the terminal (leave raw mode / alternate screen) before exit |
@@ -256,24 +262,32 @@ min_herdr_version = "0.9.0"
 description = "Mission control for herdr: animated big-picture core, projects by path, threads, timeline and token usage."
 platforms = ["linux", "macos", "windows"]
 
-[[build]]            # fetch prebuilt binary for this platform; fall back to cargo build --release
-command = [...]      # exact form decided by the spike (§10)
+[[build]]
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
 
 [[startup]]
-command = [...]      # jarvis collect
+command = ["./target/release/jarvis", "ensure-collector"]
 
 [[actions]]
 id = "open"
 title = "Open Jarvis"
 contexts = ["workspace"]
-command = [...]      # opens the overlay pane
+command = ["herdr", "plugin", "pane", "open", "--plugin", "jarvis", "--entrypoint", "core", "--focus"]
 
 [[panes]]
 id = "core"
 title = "Jarvis"
 placement = "overlay"
-command = [...]      # jarvis tui
+command = ["./target/release/jarvis", "tui"]
 ```
+
+The build scripts download the release binary for the platform, verify its SHA-256 against `SHA256SUMS`, and
+fall back to `cargo build --release` on any miss.
 
 README suggests binding `jarvis.open` to `prefix+j`.
 
@@ -288,19 +302,31 @@ README suggests binding `jarvis.open` to `prefix+j`.
 - CI (GitHub Actions): `cargo test` and `cargo clippy -- -D warnings` on ubuntu, macos and windows.
 - Manual: `herdr plugin link .` on Windows and one Unix platform before each release.
 
-## 10. Spike before implementation (~1 h)
+## 10. Spike results (2026-10-08, herdr 0.9.3, Windows 11)
 
-Three platform questions decide manifest commands and collector lifetime:
-
-1. Can a `[[startup]]` command run a long-lived process, or is it expected to exit? If it must exit, the
-   collector is started by the TUI (detached) and/or re-spawned from `[[events]]` hooks.
-2. Are relative paths in manifest `command` resolved against the plugin root on Windows, or only via `PATH`? If
-   only `PATH`, the build step installs the binary to a user bin directory, or the command goes through a launcher
-   that is on `PATH`.
-3. How `events.subscribe` streams over the socket on Windows (named pipe vs. Unix socket path), and whether the
-   CLI's `HERDR_SOCKET_PATH` is directly usable from Rust.
-
-Results are recorded in this spec before the implementation plan is finalized.
+1. **`[[startup]]` is one-shot**, not supervised: it runs once after session restore when the socket is ready,
+   not on plugin link/enable. Therefore `jarvis ensure-collector` spawns `jarvis collect` as a detached process
+   and exits. The TUI calls the same `ensure` on start, which covers `plugin link` during development and a
+   collector that died. The collector exits on its own after herdr has been unreachable for 10 minutes.
+2. **Relative pane commands work on Windows**: installed plugins (herdr-file-viewer, herdr-sidebar) use
+   `command = ["./target/release/<bin>"]` with per-entry `platforms`. The action uses `herdr plugin pane open`
+   (herdr is on `PATH`), so it does not depend on the action's working directory.
+3. **Transport**: on Unix the API is an AF_UNIX socket at `HERDR_SOCKET_PATH`; on Windows it is the named pipe
+   `\\.\pipe\` + `HERDR_SOCKET_PATH` (verbatim), which can be opened as a file. The protocol is newline-delimited
+   JSON: request `{"id","method","params"}`, response `{"id","result"}` or `{"id","error":{"code","message"}}`.
+   `session.snapshot` takes `{}` and returns `result.snapshot` with `version`, `protocol`, `workspaces`, `tabs`,
+   `panes` and `agents`.
+4. **Events**: `events.subscribe` with `{"subscriptions":[{"type":…}]}` returns
+   `{"result":{"type":"subscription_started"}}`, then lines `{"event":"pane_updated","data":{…}}`.
+   `pane.agent_status_changed` **requires a `pane_id`**, so there is one subscription per agent pane. A second
+   `events.subscribe` on the same connection is not acknowledged on Windows, so a changed pane set means opening
+   a new connection. `pane.updated` is global and fires every few seconds (title changes), but **not** for agent
+   status changes.
+5. **Design consequence**: a shared `watcher` keeps one subscription connection. Any event triggers a debounced
+   `session.snapshot`. A structural event (`pane.created`, `pane.closed`, `pane.agent_detected`, workspace and
+   worktree events) causes a re-subscribe on a fresh connection. The stale reader thread exits on its next line,
+   because `pane.updated` is always part of the subscription. Timeline records come from **diffing consecutive
+   snapshots**, not from interpreting each event type.
 
 ## 11. Distribution
 
