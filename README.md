@@ -84,6 +84,10 @@ herdr plugin link "$(pwd)"
 herdr plugin action invoke jarvis.open
 ```
 
+On Windows the running collector keeps `target/release/jarvis.exe` locked. `scripts/fetch-or-build.ps1`
+moves it aside before building; with plain `cargo build`, rename or stop it first
+(`taskkill /IM jarvis.exe /F` also closes an open overlay).
+
 ## License
 
 MIT

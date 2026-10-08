@@ -98,7 +98,9 @@ pub fn spawn_detached(args: &[&str]) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let command = || {
         let mut c = Command::new(&exe);
+        // Not the plugin root as cwd: a long-lived process would keep that directory in use.
         c.args(args)
+            .current_dir(paths::state_dir())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

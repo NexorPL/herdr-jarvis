@@ -5,12 +5,23 @@ $Repo = 'NexorPL/herdr-jarvis'
 $Root = Join-Path $PSScriptRoot '..'
 $Out = Join-Path $Root 'target\release\jarvis.exe'
 
+# A running collector keeps jarvis.exe locked; Windows still allows renaming it, so move it aside
+# and remove older leftovers that are no longer running.
+function Move-Aside {
+    if (Test-Path $Out) {
+        Rename-Item -Path $Out -NewName ('jarvis.exe.old-' + [guid]::NewGuid().ToString('N'))
+    }
+    Get-ChildItem -Path (Split-Path -Parent $Out) -Filter 'jarvis.exe.old-*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
 function Build-FromSource([string]$Reason) {
     [Console]::Error.WriteLine("jarvis: $Reason - building from source")
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         [Console]::Error.WriteLine('jarvis: cargo not found; install Rust from https://rustup.rs')
         exit 1
     }
+    Move-Aside
     Push-Location $Root
     & cargo build --release
     $code = $LASTEXITCODE
@@ -46,6 +57,7 @@ try {
     $actual = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $Tmp $Asset)).Hash.ToLowerInvariant()
     if ($expected -ne $actual) { Build-FromSource "checksum mismatch for $Asset" }
     New-Item -ItemType Directory -Path (Split-Path -Parent $Out) -Force | Out-Null
+    Move-Aside
     Move-Item -Force (Join-Path $Tmp $Asset) $Out
     Write-Output "jarvis: installed prebuilt v$Version (x86_64-pc-windows-msvc)"
 } finally {
