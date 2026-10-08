@@ -88,6 +88,15 @@ On Windows the running collector keeps `target/release/jarvis.exe` locked. `scri
 moves it aside before building; with plain `cargo build`, rename or stop it first
 (`taskkill /IM jarvis.exe /F` also closes an open overlay).
 
+## Contributing
+
+`main` changes only through pull requests, merged with a merge commit (no squash, no rebase) after CI
+passes. Enable the local guard against committing to `main`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## License
 
 MIT
