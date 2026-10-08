@@ -20,6 +20,15 @@ pub fn status_bar(f: &mut Frame, area: Rect, app: &App) {
             " JARVIS ",
             Style::new().fg(Color::Black).bg(pal.accent).bold(),
         ),
+        // Up front, so narrow terminals (compact mode) still see it; the reason follows at the end.
+        Span::styled(
+            if app.offline.is_some() {
+                " OFFLINE "
+            } else {
+                ""
+            },
+            Style::new().fg(Color::Black).bg(pal.alert).bold(),
+        ),
         Span::raw("  "),
         Span::styled(
             format!("● {} working", c.working),
@@ -455,5 +464,16 @@ mod tests {
         assert!(out.contains("▲ 1 blocked"));
         assert!(out.contains("today ≈$4.00"));
         assert!(out.contains("herdr offline"));
+    }
+
+    #[test]
+    fn offline_badge_visible_on_narrow_terminals() {
+        let mut app = sample_app();
+        app.offline = Some("herdr offline: connect failed".into());
+        let out = render(60, 1, |f| {
+            let area = f.area();
+            status_bar(f, area, &app)
+        });
+        assert!(out.contains("JARVIS  OFFLINE"));
     }
 }
