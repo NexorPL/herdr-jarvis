@@ -1,4 +1,5 @@
 mod config;
+mod herdr;
 mod log;
 mod paths;
 mod pricing;
