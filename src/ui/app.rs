@@ -6,9 +6,11 @@ use crate::herdr::AgentStatus;
 use crate::ideas::Idea;
 use crate::model::{AgentRow, EventRow, Model, Project, ThreadRow};
 use crate::pricing::Pricing;
+use crate::run::{self, Layout, Step, Target};
 use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::path::PathBuf;
 
 /// Boot animation length in 33 ms ticks (~0.8 s).
 pub const BOOT_TICKS: u64 = 24;
@@ -94,6 +96,13 @@ pub enum Action {
     Copy(String),
     /// `ideas` changed; write them to disk.
     SaveIdeas,
+    /// Read `.jarvis/run.toml` under the context's root and open the picker.
+    LoadTargets(RunContext),
+    /// Send these steps to herdr, then focus the first new pane.
+    Run {
+        workspace_id: Option<String>,
+        steps: Vec<Step>,
+    },
 }
 
 /// The add/edit idea popup; while open it takes every key.
@@ -116,6 +125,24 @@ impl IdeaForm {
             &mut self.name
         }
     }
+}
+
+/// Where `x` starts targets: the project's name, the agent's workspace and the folder holding `.jarvis/run.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunContext {
+    pub project: String,
+    pub workspace_id: Option<String>,
+    pub root: PathBuf,
+}
+
+/// The run-target popup; while open it takes every key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picker {
+    pub ctx: RunContext,
+    pub targets: Vec<Target>,
+    pub chosen: Vec<bool>,
+    pub cursor: usize,
+    pub choosing_layout: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +211,7 @@ pub struct App {
     pub form: Option<IdeaForm>,
     /// Index into `ideas` waiting for `y` to be deleted.
     pub confirm_delete: Option<usize>,
+    pub picker: Option<Picker>,
 }
 
 impl App {
@@ -219,6 +247,7 @@ impl App {
             ideas: Vec::new(),
             form: None,
             confirm_delete: None,
+            picker: None,
         }
     }
 
@@ -423,6 +452,10 @@ impl App {
             self.on_form_key(key);
             return;
         }
+        if self.picker.is_some() {
+            self.on_picker_key(key);
+            return;
+        }
         if let Some(i) = self.confirm_delete.take() {
             self.status = None;
             if key.code == KeyCode::Char('y') && i < self.ideas.len() {
@@ -588,6 +621,12 @@ impl App {
                     self.confirm_delete = Some(i);
                 }
             }
+            KeyCode::Char('x') => match self.run_context() {
+                Some(ctx) => self.action = Some(Action::LoadTargets(ctx)),
+                None => {
+                    self.status = Some("x runs targets: open a project or select an agent".into())
+                }
+            },
             _ => {}
         }
     }
@@ -622,6 +661,110 @@ impl App {
             Tab::Ideas => self.edit_idea(),
             Tab::Timeline | Tab::Usage => {}
         }
+    }
+
+    /// Pane of a target that is already running, found by its herdr label.
+    pub fn running_pane(&self, project: &str, target: &str) -> Option<&String> {
+        self.model
+            .pane_labels
+            .get(&run::pane_label(project, target))
+    }
+
+    /// The selected agent (Agents tab) or the open project, with the agent's worktree preferred as root.
+    fn run_context(&self) -> Option<RunContext> {
+        let row = if self.tab() == Tab::Agents {
+            self.visible_agents().get(self.selected_row).copied()
+        } else {
+            None
+        };
+        let (project, agent) = match (&self.screen, row) {
+            (_, Some((p, a))) => (p, Some(a)),
+            (Screen::Project { key, .. }, None) => {
+                (self.model.projects.iter().find(|p| &p.key == key)?, None)
+            }
+            _ => return None,
+        };
+        let root = (agent.and_then(|a| a.worktree.clone())).unwrap_or_else(|| project.root.clone());
+        Some(RunContext {
+            project: project.name.clone(),
+            workspace_id: agent
+                .or(project.agents.first())
+                .map(|a| a.pane.workspace_id.clone()),
+            root: PathBuf::from(root),
+        })
+    }
+
+    pub fn open_picker(&mut self, ctx: RunContext, targets: Result<Vec<Target>, String>) {
+        match targets {
+            Ok(targets) => {
+                self.picker = Some(Picker {
+                    chosen: vec![false; targets.len()],
+                    ctx,
+                    targets,
+                    cursor: 0,
+                    choosing_layout: false,
+                })
+            }
+            Err(e) => self.status = Some(e),
+        }
+    }
+
+    fn on_picker_key(&mut self, key: KeyEvent) {
+        let Some(p) = self.picker.as_mut() else {
+            return;
+        };
+        let last = p.targets.len().saturating_sub(1);
+        match (p.choosing_layout, key.code) {
+            (true, KeyCode::Char('t')) => self.start_targets(Layout::Tabs),
+            (true, KeyCode::Char('s')) => self.start_targets(Layout::Split),
+            (true, KeyCode::Esc) => p.choosing_layout = false,
+            (true, _) => {}
+            (false, KeyCode::Esc) => self.picker = None,
+            (false, KeyCode::Up | KeyCode::Char('k')) => p.cursor = p.cursor.saturating_sub(1),
+            (false, KeyCode::Down | KeyCode::Char('j')) => p.cursor = (p.cursor + 1).min(last),
+            (false, KeyCode::Char(' ')) => {
+                if let Some(c) = p.chosen.get_mut(p.cursor) {
+                    *c = !*c;
+                }
+            }
+            (false, KeyCode::Char('a')) => {
+                let all = p.chosen.iter().all(|c| *c);
+                p.chosen.fill(!all);
+            }
+            (false, KeyCode::Enter) => match p.chosen.iter().filter(|c| **c).count() {
+                0 => {}
+                1 => self.start_targets(Layout::Tabs),
+                _ => p.choosing_layout = true,
+            },
+            (false, _) => {}
+        }
+    }
+
+    /// Starts the chosen targets that are not running yet; focuses a running one when none is left.
+    fn start_targets(&mut self, layout: Layout) {
+        let Some(p) = self.picker.take() else {
+            return;
+        };
+        let (running, to_start): (Vec<&Target>, Vec<&Target>) = (p.targets.iter().zip(&p.chosen))
+            .filter(|(_, chosen)| **chosen)
+            .map(|(t, _)| t)
+            .partition(|t| self.running_pane(&p.ctx.project, &t.name).is_some());
+        if to_start.is_empty() {
+            self.action = (running.first())
+                .and_then(|t| self.running_pane(&p.ctx.project, &t.name))
+                .cloned()
+                .map(Action::FocusPane);
+            return;
+        }
+        if !running.is_empty() {
+            let names: Vec<&str> = running.iter().map(|t| t.name.as_str()).collect();
+            self.status = Some(format!("already running: {}", names.join(", ")));
+        }
+        let to_start: Vec<Target> = to_start.into_iter().cloned().collect();
+        self.action = Some(Action::Run {
+            steps: run::plan(&p.ctx.project, &p.ctx.root, &to_start, layout),
+            workspace_id: p.ctx.workspace_id,
+        });
     }
 
     fn add_idea(&mut self) {
@@ -713,7 +856,9 @@ pub fn sample_app() -> App {
 mod tests {
     use super::*;
     use crate::ideas::Idea;
+    use crate::run::{self, Layout, Target};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
 
     fn key(app: &mut App, code: KeyCode) {
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
@@ -1060,5 +1205,164 @@ mod tests {
         key(&mut app, KeyCode::Char('d'));
         key(&mut app, KeyCode::Char('y'));
         assert_eq!(app.ideas, vec![idea(&app, 0, "first")]);
+    }
+
+    fn run_targets() -> Vec<Target> {
+        run::parse(
+            "[[target]]\nname = \"api\"\ncommand = \"cargo run\"\n\
+             [[target]]\nname = \"web\"\ncommand = \"pnpm dev\"\n",
+        )
+        .unwrap()
+    }
+
+    /// alpha's project screen, Agents tab, its only agent selected.
+    fn alpha_agents(app: &mut App) {
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Agents,
+        };
+    }
+
+    fn open_picker(app: &mut App) -> RunContext {
+        alpha_agents(app);
+        key(app, KeyCode::Char('x'));
+        let Some(Action::LoadTargets(ctx)) = app.action.take() else {
+            panic!("x should ask for targets");
+        };
+        app.open_picker(ctx.clone(), Ok(run_targets()));
+        ctx
+    }
+
+    #[test]
+    fn x_asks_for_the_targets_of_the_selected_agents_worktree() {
+        let mut app = sample_app();
+        app.model.projects[1].agents[0].worktree = Some("/home/u/alpha-feat".into());
+        alpha_agents(&mut app);
+        key(&mut app, KeyCode::Char('x'));
+        assert_eq!(
+            app.action,
+            Some(Action::LoadTargets(RunContext {
+                project: "alpha".into(),
+                workspace_id: Some("w1".into()),
+                root: PathBuf::from("/home/u/alpha-feat"),
+            }))
+        );
+    }
+
+    #[test]
+    fn x_on_a_project_tab_without_agent_rows_uses_the_project_root() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Threads,
+        };
+        key(&mut app, KeyCode::Char('x'));
+        let Some(Action::LoadTargets(ctx)) = app.action else {
+            panic!("x should ask for targets");
+        };
+        assert_eq!(ctx.root, PathBuf::from(&app.model.projects[1].root));
+        assert_eq!(ctx.workspace_id.as_deref(), Some("w1"));
+    }
+
+    #[test]
+    fn x_needs_a_project_or_an_agent() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('T'));
+        key(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.action, None);
+        assert!(app.status.as_deref().unwrap().contains("open a project"));
+    }
+
+    #[test]
+    fn missing_targets_go_to_the_status_line() {
+        let mut app = sample_app();
+        alpha_agents(&mut app);
+        key(&mut app, KeyCode::Char('x'));
+        let Some(Action::LoadTargets(ctx)) = app.action.take() else {
+            panic!("x should ask for targets");
+        };
+        app.open_picker(
+            ctx,
+            Err("no run targets: /home/u/alpha/.jarvis/run.toml".into()),
+        );
+        assert!(app.picker.is_none());
+        assert!(app.status.as_deref().unwrap().contains("no run targets"));
+    }
+
+    #[test]
+    fn one_chosen_target_starts_in_its_own_tab() {
+        let mut app = sample_app();
+        let ctx = open_picker(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.picker.is_none());
+        assert_eq!(
+            app.action,
+            Some(Action::Run {
+                workspace_id: Some("w1".into()),
+                steps: run::plan("alpha", &ctx.root, &run_targets()[1..], Layout::Tabs),
+            })
+        );
+    }
+
+    #[test]
+    fn several_targets_ask_for_the_layout() {
+        let mut app = sample_app();
+        let ctx = open_picker(&mut app);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.action.is_none(), "nothing chosen, nothing happens");
+        key(&mut app, KeyCode::Char('a'));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.picker.as_ref().unwrap().choosing_layout);
+        key(&mut app, KeyCode::Esc);
+        assert!(!app.picker.as_ref().unwrap().choosing_layout);
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(
+            app.action,
+            Some(Action::Run {
+                workspace_id: Some("w1".into()),
+                steps: run::plan("alpha", &ctx.root, &run_targets(), Layout::Split),
+            })
+        );
+    }
+
+    #[test]
+    fn running_targets_are_focused_or_skipped() {
+        let mut app = sample_app();
+        app.model
+            .pane_labels
+            .insert("alpha:api".into(), "w1:p7".into());
+        open_picker(&mut app);
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.action.take(), Some(Action::FocusPane("w1:p7".into())));
+
+        let ctx = open_picker(&mut app);
+        key(&mut app, KeyCode::Char('a'));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(
+            app.action,
+            Some(Action::Run {
+                workspace_id: Some("w1".into()),
+                steps: run::plan("alpha", &ctx.root, &run_targets()[1..], Layout::Tabs),
+            })
+        );
+        assert_eq!(app.status.as_deref(), Some("already running: api"));
+    }
+
+    #[test]
+    fn picker_takes_every_key_and_esc_closes_it() {
+        let mut app = sample_app();
+        open_picker(&mut app);
+        key(&mut app, KeyCode::Char('q'));
+        key(&mut app, KeyCode::Char('T'));
+        assert!(!app.quit);
+        assert!(matches!(app.screen, Screen::Project { .. }));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert!(matches!(app.screen, Screen::Project { .. }));
     }
 }

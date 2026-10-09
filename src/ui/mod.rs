@@ -12,7 +12,7 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, ideas, model, paths};
+use crate::{collector, ideas, model, paths, run};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
@@ -248,6 +248,26 @@ fn event_loop(
             Some(Action::SaveIdeas) => {
                 if let Err(e) = ideas::save(ideas_path, &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));
+                }
+            }
+            Some(Action::LoadTargets(ctx)) => {
+                let targets = run::load(&ctx.root);
+                app.open_picker(ctx, targets);
+            }
+            Some(Action::Run {
+                workspace_id,
+                steps,
+            }) => {
+                let sock = herdr::socket_path();
+                let send = |method: &str, params| herdr::client::request(&sock, method, params);
+                match run::execute(workspace_id.as_deref(), &steps, send) {
+                    Ok(Some(pane)) => {
+                        if let Err(e) = herdr::focus_pane(&sock, &pane) {
+                            app.status = Some(format!("could not focus {pane}: {e}"));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => app.status = Some(format!("run: {e}")),
                 }
             }
             None => {}
