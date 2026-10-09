@@ -1,6 +1,6 @@
 //! Popups drawn over the current screen: the idea form and the run picker.
 
-use super::app::{App, IdeaForm};
+use super::app::{App, IdeaForm, Picker};
 use super::theme::Palette;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -60,4 +60,35 @@ pub fn idea_form(f: &mut Frame, area: Rect, app: &App, form: &IdeaForm) {
         " new idea "
     };
     popup(f, area, title, lines, pal);
+}
+
+pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
+    let pal = &app.palette;
+    let mut lines: Vec<Line<'static>> = (p.targets.iter().enumerate())
+        .map(|(i, t)| {
+            let mark = if p.chosen[i] { "[x]" } else { "[ ]" };
+            let mut spans = vec![
+                Span::styled(
+                    if i == p.cursor { "› " } else { "  " },
+                    Style::new().fg(pal.accent),
+                ),
+                Span::raw(format!("{mark} {:<16}", t.name)),
+                Span::styled(format!(" {}", t.command), Style::new().fg(pal.dim)),
+            ];
+            if app.running_pane(&p.ctx.project, &t.name).is_some() {
+                spans.push(Span::styled("  ● running", Style::new().fg(pal.ok)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        if p.choosing_layout {
+            "t one tab per target · s side by side in one tab · Esc back"
+        } else {
+            "Space select · a all · Enter run · Esc close"
+        },
+        Style::new().fg(pal.accent),
+    )));
+    popup(f, area, &format!(" run · {} ", p.ctx.project), lines, pal);
 }

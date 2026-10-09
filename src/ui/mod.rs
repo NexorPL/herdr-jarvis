@@ -42,6 +42,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(form) = &app.form {
         overlays::idea_form(f, body, app, form);
     }
+    if let Some(p) = &app.picker {
+        overlays::picker(f, body, app, p);
+    }
     if app.show_help {
         centered(
             f,
@@ -53,6 +56,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete",
+                "Run:    x start targets from .jarvis/run.toml (project screen, agent rows)",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -364,6 +368,34 @@ mod tests {
         assert!(out.contains("Export"));
         assert!(out.contains("usage to CSV"));
         assert!(out.contains("Enter save"));
+    }
+
+    #[test]
+    fn draws_the_run_picker_with_running_marks_and_layout_hint() {
+        let mut app = sample_app();
+        app.model
+            .pane_labels
+            .insert("alpha:api".into(), "w1:p7".into());
+        app.open_picker(
+            crate::ui::app::RunContext {
+                project: "alpha".into(),
+                workspace_id: Some("w1".into()),
+                root: "/home/u/alpha".into(),
+            },
+            crate::run::parse(
+                "[[target]]\nname = \"api\"\ncommand = \"cargo run\"\n\
+                 [[target]]\nname = \"web\"\ncommand = \"pnpm dev\"\n",
+            ),
+        );
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("run · alpha"));
+        assert!(out.contains("[ ] api"));
+        assert!(out.contains("● running"));
+        assert!(out.contains("pnpm dev"));
+        assert!(out.contains("Space select"));
+        app.picker.as_mut().unwrap().choosing_layout = true;
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("s side by side"));
     }
 
     #[test]
