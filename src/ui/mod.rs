@@ -183,6 +183,8 @@ pub fn demo() -> anyhow::Result<()> {
     let config = Config::default();
     let state = std::env::temp_dir().join("jarvis-demo");
     std::fs::create_dir_all(&state)?;
+    // Enter, p and x fail here instead of reaching a real herdr.
+    std::env::set_var("HERDR_SOCKET_PATH", state.join("no-herdr.sock"));
     let now = chrono::Utc::now();
     let (snap_tx, watch) = mpsc::channel();
     snap_tx.send(WatchMsg::Snapshot(demo::snapshot()))?;
