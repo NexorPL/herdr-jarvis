@@ -13,7 +13,7 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, model, paths, run, store};
+use crate::{collector, demo, model, paths, run, store};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
@@ -173,6 +173,33 @@ pub fn run() -> anyhow::Result<()> {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
     };
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
+    ratatui::restore();
+    result
+}
+
+/// The TUI on `demo` data, for screenshots: no herdr, no collector, state in a temp dir.
+pub fn demo() -> anyhow::Result<()> {
+    let config = Config::default();
+    let state = std::env::temp_dir().join("jarvis-demo");
+    std::fs::create_dir_all(&state)?;
+    let now = chrono::Utc::now();
+    let (snap_tx, watch) = mpsc::channel();
+    snap_tx.send(WatchMsg::Snapshot(demo::snapshot()))?;
+    let (source_tx, sources) = mpsc::channel();
+    source_tx.send(SourceUpdate {
+        threads: demo::threads(now),
+        records: demo::records(now),
+        collector_running: true,
+    })?;
+    let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
+    app.ideas = demo::ideas();
+    app.targets = demo::targets();
+    let me = Me {
+        pane: String::new(),
+        tab: String::new(),
+    };
+    let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
     ratatui::restore();
     result
