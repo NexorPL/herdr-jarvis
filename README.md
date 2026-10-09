@@ -93,11 +93,7 @@ moves it aside before building; with plain `cargo build`, rename or stop it firs
 ## Contributing
 
 `main` changes only through pull requests, merged with a merge commit (no squash, no rebase) after CI
-passes. Enable the local guard against committing to `main`:
-
-```bash
-git config core.hooksPath .githooks
-```
+passes. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks to run and how to test a change in herdr.
 
 ## License
 
