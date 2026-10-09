@@ -25,8 +25,18 @@ herdr plugin install NexorPL/herdr-jarvis
 The install step downloads a prebuilt, SHA-256-verified binary for your platform and falls back to
 `cargo build --release` (Rust from https://rustup.rs) when none matches.
 
-Open it with the `Open Jarvis` action, or bind a key in herdr's `config.toml`. If Jarvis is already open,
-the same key jumps to its tab instead of starting a second one:
+## Run
+
+From any shell inside herdr:
+
+```bash
+herdr plugin action invoke jarvis.open
+```
+
+Jarvis opens in its own tab and stays open; `q` closes it. herdr does not list plugin actions in its
+menus, so for everyday use bind a key in herdr's `config.toml` and reload it (global menu →
+`reload config`). If Jarvis is already open, the same key jumps to its tab instead of starting a second
+one:
 
 ```toml
 [[keys.command]]
@@ -122,6 +132,9 @@ cargo build --release
 herdr plugin link "$(pwd)"
 herdr plugin action invoke jarvis.open
 ```
+
+`jarvis demo` (`cargo run -- demo`) runs the UI on made-up projects without herdr, for screenshots and
+recordings; nothing it does reaches herdr or your state directory.
 
 On Windows the running collector keeps `target/release/jarvis.exe` locked. `scripts/fetch-or-build.ps1`
 moves it aside before building; with plain `cargo build`, rename or stop it first
