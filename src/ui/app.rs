@@ -533,6 +533,7 @@ impl App {
             KeyCode::Char('L') => self.goto(Screen::Global(Tab::Timeline)),
             KeyCode::Char('U') => self.goto(Screen::Global(Tab::Usage)),
             KeyCode::Char('I') => self.goto(Screen::Global(Tab::Ideas)),
+            KeyCode::Char('p') => self.prompt_form(),
             _ if self.screen == Screen::Core => self.on_core_key(key),
             _ => self.on_list_key(key),
         }
@@ -702,7 +703,6 @@ impl App {
                     });
                 }
             }
-            KeyCode::Char('p') if self.tab() == Tab::Agents => self.prompt_form(),
             KeyCode::Char('x') => match self.run_context() {
                 Some(ctx) => {
                     let n = (self.targets.iter())
@@ -757,7 +757,11 @@ impl App {
 
     /// The prompt form for the selected agent. herdr refuses prompts to an agent waiting on a question.
     fn prompt_form(&mut self) {
-        let Some((p, a)) = self.visible_agents().get(self.selected_row).copied() else {
+        let row = (self.screen != Screen::Core && self.tab() == Tab::Agents)
+            .then(|| self.visible_agents().get(self.selected_row).copied())
+            .flatten();
+        let Some((p, a)) = row else {
+            self.status = Some("p prompts an agent: select one in the Agents tab".into());
             return;
         };
         let agent = format!("{}/{}", p.name, a.pane.title());
@@ -1333,6 +1337,10 @@ mod tests {
     #[test]
     fn p_prompts_the_selected_agent_unless_blocked() {
         let mut app = sample_app();
+        key(&mut app, KeyCode::Char('T'));
+        key(&mut app, KeyCode::Char('p'));
+        assert!(app.form.is_none());
+        assert!(app.status.as_deref().unwrap().contains("Agents tab"));
         key(&mut app, KeyCode::Char('A'));
         let row = |app: &App, s| {
             (app.visible_agents().iter())
