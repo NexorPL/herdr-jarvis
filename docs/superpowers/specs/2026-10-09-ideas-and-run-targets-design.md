@@ -31,9 +31,10 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
   Ideas belong to the project, not to an agent.
 - `project_name` is stored so ideas of projects with no live agents still show a readable label.
 - The TUI loads the file at start and keeps the list in memory. Every change rewrites the whole file
-  atomically (write `ideas.json.tmp`, then rename). A missing file is an empty list. An unreadable file is
-  copied to `ideas.json.bad` (so the next edit cannot lose it), reported in the status line and treated as
-  empty.
+  atomically (write `ideas.json.tmp`, then rename). A missing file is an empty list. A file that cannot be
+  read, is not UTF-8 or is not valid JSON is copied to `ideas.json.bad` (so the next edit cannot lose it),
+  reported in the status line and treated as empty; a UTF-8 BOM is accepted. When both `ideas.json` and
+  `targets.json` fail, the status line shows both messages.
 - Several Jarvis panes writing at once: last write wins. Jarvis normally runs as one pane.
 
 ### UI
@@ -51,10 +52,11 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
     `○ todo`, `◐ doing`, `✓ done` in a first column; done ideas are dimmed. Editing keeps the status.
   - `s` filters by status: all → todo → doing → done → all. It is separate from the agent state filter.
   - The list shows doing ideas first, then todo, then done, each group in file order. Done ideas are folded
-    into one line (`── ✓ N done · c to show ──`) until `c` shows them; `c` folds them again. The done filter
+    into one line (`── ✓ N done · c to show ──`) until `c` shows them; `c` folds them again. `Space` keeps
+    the cursor on the idea it changed, or on the same row when that idea was folded away. The done filter
     shows them either way.
 - Form: an overlay with two single-line fields, Name and Description. `Tab`/`BackTab` move between fields,
-  typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a status
+  typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a message in the form; the form never touches the status
   message), `Esc` cancels. While the form is open it takes every key. Ideas and run targets share this form.
 - Delete popup: a centered `Delete "<name>"?` with `[ Yes ]` and `[ No ]`, **No** selected.
   `Left`/`Right`/`Tab`/`h`/`l` switch the button, `Enter` confirms the selected one, `y` deletes, `n` or
@@ -91,7 +93,7 @@ root.
 - The picker lists the targets with `[ ]`/`[x]` and `● running` for targets already running. `Space` toggles
   the selected target, `a` selects all or none, `j`/`k`/arrows move, `Esc` closes. The footer lists the keys.
 - `n` adds a target, `e` edits the one under the cursor, `d` deletes it through the delete popup. The form
-  has the fields name, command and cwd; name and command are required (a status message says so), cwd is
+  has the fields name, command and cwd; name and command are required (a message in the form says so), cwd is
   optional. `Enter` saves and returns to the picker, `Esc` cancels.
 - `Enter` with one target selected starts it in its own tab. With more selected it asks for the layout:
   `t` one tab per target, `s` one tab with the targets side by side, `Esc` back to the picker.

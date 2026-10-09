@@ -1,5 +1,10 @@
 # Project Ideas and Run Targets Implementation Plan
 
+> **Superseded.** This is the original plan and is kept for history. After it ran, run targets moved from
+> `.jarvis/run.toml` to private `targets.json` storage edited from the picker, and ideas gained statuses and
+> a delete popup. The spec (`docs/superpowers/specs/2026-10-09-ideas-and-run-targets-design.md`) describes
+> the current behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a per-project idea list (issue #2) and starting project run targets from `.jarvis/run.toml` in herdr panes (issue #8) to the Jarvis TUI.
