@@ -26,6 +26,10 @@ const GLOBAL_SUBSCRIPTIONS: &[&str] = &[
     "pane.closed",
     "pane.exited",
     "pane.agent_detected",
+    // Jarvis shows what changed since the focus last left it.
+    "pane.focused",
+    "tab.focused",
+    "workspace.focused",
     "workspace.created",
     "workspace.closed",
     "worktree.created",
@@ -182,6 +186,7 @@ mod tests {
         let subs = subscriptions(&fixture());
         assert_eq!(subs.len(), GLOBAL_SUBSCRIPTIONS.len() + 2);
         assert!(subs.contains(&json!({"type": "pane.updated"})));
+        assert!(subs.contains(&json!({"type": "pane.focused"})));
         assert!(subs.contains(&json!({"type": "pane.agent_status_changed", "pane_id": "w2:p1"})));
     }
 

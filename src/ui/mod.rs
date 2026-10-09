@@ -160,9 +160,19 @@ pub fn run() -> anyhow::Result<()> {
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &watch, &sources);
+    let me = Me {
+        pane: my_pane,
+        tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
+    };
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me);
     ratatui::restore();
     result
+}
+
+/// Jarvis's own pane and tab in herdr.
+struct Me {
+    pane: String,
+    tab: String,
 }
 
 fn event_loop(
@@ -170,8 +180,10 @@ fn event_loop(
     app: &mut App,
     watch: &Receiver<WatchMsg>,
     sources: &Receiver<SourceUpdate>,
+    me: &Me,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let mut tab_label = String::new();
     let mut snap = Snapshot::default();
     let mut update = SourceUpdate::default();
     let mut resolver = Resolver::default();
@@ -210,6 +222,16 @@ fn event_loop(
             );
             app.clamp();
             dirty = false;
+        }
+        app.set_looking(snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
+        let label = app.tab_label();
+        if !me.tab.is_empty() && label != tab_label {
+            let params = serde_json::json!({"tab_id": me.tab, "label": label});
+            if let Err(e) = herdr::client::request(&herdr::socket_path(), "tab.rename", params) {
+                app.status = Some(format!("could not rename the Jarvis tab: {e}"));
+            }
+            // Not retried on failure: one attempt per label change.
+            tab_label = label;
         }
         let size = terminal.size()?;
         app.compact = size.width < 90 || size.height < 28;

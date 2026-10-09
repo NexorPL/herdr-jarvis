@@ -265,7 +265,7 @@ fn node_box(
             (
                 format!("{} {}", i + 1, p.name),
                 vec![
-                    theme::counts(&p.counts),
+                    project_counts(app, p),
                     format!("{} · {first}", theme::ago(p.last_activity, app.now)),
                 ],
                 theme::status_color(p.urgency(), pal),
@@ -312,6 +312,15 @@ fn node_box(
         .collect();
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(body).block(block), rect);
+}
+
+/// Agent counts, plus how many changed to blocked/done since you last left Jarvis.
+fn project_counts(app: &App, p: &crate::model::Project) -> String {
+    let counts = theme::counts(&p.counts);
+    match app.new_in(p) {
+        0 => counts,
+        n => format!("{counts} · {n} new"),
+    }
 }
 
 fn feed(f: &mut Frame, area: Rect, app: &App) {
@@ -367,7 +376,7 @@ fn compact(f: &mut Frame, area: Rect, app: &App) {
                     format!("{:<20}", theme::truncate(&p.name, 20)),
                     Style::new().bold(),
                 ),
-                Span::raw(format!(" {:<16}", theme::counts(&p.counts))),
+                Span::raw(format!(" {:<16}", project_counts(app, p))),
                 Span::styled(
                     theme::ago(p.last_activity, app.now),
                     Style::new().fg(pal.dim),
@@ -406,6 +415,16 @@ mod tests {
         assert!(out.contains("3 gamma"));
         assert!(out.contains("2 active"));
         assert!(out.contains("▲1"));
+    }
+
+    #[test]
+    fn nodes_and_compact_list_count_new_agents() {
+        let mut app = sample_app();
+        app.last_left = crate::model::testkit::ts("2000-01-01T00:00:00Z");
+        app.model.projects[0].agents[0].since = Some(app.now);
+        assert!(core(&app, 100, 30).contains("▲1 · 1 new"));
+        app.compact = true;
+        assert!(core(&app, 60, 20).contains("▲1 · 1 new"));
     }
 
     #[test]
