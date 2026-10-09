@@ -1,5 +1,6 @@
 pub mod app;
 pub mod hud;
+mod line_edit;
 pub mod overlays;
 pub mod theme;
 pub mod views;
@@ -380,6 +381,7 @@ mod tests {
                 ("description", "usage to CSV".into()),
             ],
             focus: 1,
+            cursor: usize::MAX,
             error: Some("an idea needs a name".into()),
         });
         let out = render(100, 30, |f| draw(f, &app));

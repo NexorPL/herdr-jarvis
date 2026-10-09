@@ -36,11 +36,23 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
             } else {
                 Style::new().fg(pal.dim)
             };
-            Line::from(vec![
-                Span::styled(format!("{label:<12} "), style),
-                Span::raw(value.clone()),
-                Span::styled(if focused { "▏" } else { "" }, Style::new().fg(pal.accent)),
-            ])
+            let mut spans = vec![Span::styled(format!("{label:<12} "), style)];
+            if focused {
+                // The char under the cursor is drawn reversed; at the end, a reversed space.
+                let chars: Vec<char> = value.chars().collect();
+                let at = form.cursor.min(chars.len());
+                let under = chars.get(at).map_or(" ".into(), char::to_string);
+                spans.push(Span::raw(chars[..at].iter().collect::<String>()));
+                spans.push(Span::styled(under, Style::new().reversed()));
+                spans.push(Span::raw(
+                    chars[(at + 1).min(chars.len())..]
+                        .iter()
+                        .collect::<String>(),
+                ));
+            } else {
+                spans.push(Span::raw(value.clone()));
+            }
+            Line::from(spans)
         })
         .collect();
     lines.push(Line::raw(""));

@@ -56,7 +56,9 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
     the cursor on the idea it changed, or on the same row when that idea was folded away. The done filter
     shows them either way.
 - Form: an overlay with two single-line fields, Name and Description. `Tab`/`BackTab` move between fields,
-  typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a message in the form; the form never touches the status
+  typing edits the focused field at a cursor (`←` `→`, `Home`/`End` or `Ctrl+A`/`Ctrl+E`, `Ctrl+←`/`Ctrl+→` by
+  word, `Delete`, `Ctrl+Backspace`/`Ctrl+W` a word, `Ctrl+U` to the start; AltGr letters are typed),
+  `Backspace` deletes, `Enter` saves (an empty name is refused with a message in the form; the form never touches the status
   message), `Esc` cancels. While the form is open it takes every key. Ideas and run targets share this form.
 - Delete popup: a centered `Delete "<name>"?` with `[ Yes ]` and `[ No ]`, **No** selected.
   `Left`/`Right`/`Tab`/`h`/`l` switch the button, `Enter` confirms the selected one, `y` deletes, `n` or

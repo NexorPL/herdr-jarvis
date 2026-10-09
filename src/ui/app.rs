@@ -1,5 +1,6 @@
 //! UI state and key handling. Pure: no terminal, no herdr; side effects are requested via `action`.
 
+use super::line_edit;
 use super::theme::Palette;
 use crate::config::{Animation, Config};
 use crate::herdr::AgentStatus;
@@ -131,6 +132,8 @@ pub struct Form {
     pub kind: FormKind,
     pub fields: Vec<(&'static str, String)>,
     pub focus: usize,
+    /// Char index in the focused field; past the end means at the end.
+    pub cursor: usize,
     /// Why Enter was refused, shown in the form.
     pub error: Option<String>,
 }
@@ -880,6 +883,7 @@ impl App {
             },
             fields: vec![("name", t.name), ("command", t.command), ("cwd", t.cwd)],
             focus: 0,
+            cursor: usize::MAX,
             error: None,
         });
     }
@@ -943,6 +947,7 @@ impl App {
             },
             fields: vec![("name", String::new()), ("description", String::new())],
             focus: 0,
+            cursor: usize::MAX,
             error: None,
         });
     }
@@ -960,6 +965,7 @@ impl App {
                 },
                 fields: vec![("name", idea.name), ("description", idea.description)],
                 focus: 0,
+                cursor: usize::MAX,
                 error: None,
             });
         }
@@ -977,12 +983,15 @@ impl App {
                 match code {
                     KeyCode::Tab => form.focus = (form.focus + 1) % n,
                     KeyCode::BackTab => form.focus = (form.focus + n - 1) % n,
-                    KeyCode::Backspace => {
-                        form.fields[form.focus].1.pop();
+                    _ => {
+                        return line_edit::edit(
+                            &mut form.fields[form.focus].1,
+                            &mut form.cursor,
+                            key,
+                        )
                     }
-                    KeyCode::Char(c) => form.fields[form.focus].1.push(c),
-                    _ => {}
                 }
+                form.cursor = usize::MAX;
             }
         }
     }
@@ -1770,6 +1779,30 @@ mod tests {
         assert_eq!(app.picker.as_ref().unwrap().chosen, [true]);
         let stored: Vec<&str> = app.targets.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(stored, ["beta-api", "web"], "beta's target stays");
+    }
+
+    #[test]
+    fn form_fields_edit_at_the_cursor() {
+        let mut app = sample_app();
+        alpha_agents(&mut app);
+        key(&mut app, KeyCode::Char('x'));
+        key(&mut app, KeyCode::Char('n'));
+        chars(&mut app, "png");
+        key(&mut app, KeyCode::Left);
+        key(&mut app, KeyCode::Left);
+        chars(&mut app, "i");
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "cargo rn");
+        key(&mut app, KeyCode::Left);
+        chars(&mut app, "u");
+        key(&mut app, KeyCode::BackTab);
+        chars(&mut app, "er");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.targets[0].name, "pinger",
+            "a field is re-entered at its end"
+        );
+        assert_eq!(app.targets[0].command, "cargo run");
     }
 
     #[test]

@@ -52,7 +52,7 @@ timeline, without threads or cost.
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
-| Forms | `Tab` / `Shift+Tab` switch field · `Enter` save · `Esc` cancel |
+| Forms | `Tab` / `Shift+Tab` switch field · `←` `→` `Home` `End` move · `Ctrl+←` `Ctrl+→` by word · `Backspace` / `Delete` · `Ctrl+Backspace` or `Ctrl+W` delete a word · `Enter` save · `Esc` cancel |
 | Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
