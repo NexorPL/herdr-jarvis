@@ -1,5 +1,14 @@
 # Jarvis
 
+[![CI](https://img.shields.io/github/actions/workflow/status/NexorPL/herdr-jarvis/ci.yml?branch=main&label=CI&logo=github)](https://github.com/NexorPL/herdr-jarvis/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/NexorPL/herdr-jarvis?label=release)](https://github.com/NexorPL/herdr-jarvis/releases/latest)
+[![License](https://img.shields.io/github/license/NexorPL/herdr-jarvis)](LICENSE)
+[![herdr](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FNexorPL%2Fherdr-jarvis%2Fmain%2Fherdr-plugin.toml&query=%24.min_herdr_version&label=herdr&prefix=%E2%89%A5%20&color=8A2BE2)](https://herdr.dev)
+[![Rust](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FNexorPL%2Fherdr-jarvis%2Fmain%2FCargo.toml&query=%24.package%5B%27rust-version%27%5D&label=rust&prefix=%E2%89%A5%20&color=orange&logo=rust)](https://rustup.rs)
+![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-supported-0078D6?logo=windows&logoColor=white)
+
 **Mission control for [herdr](https://herdr.dev).** One keypress opens Jarvis in its own tab, and it stays
 open while you work. Its animated core: every project with herdr activity branches out of it, showing which agents are working,
 which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
