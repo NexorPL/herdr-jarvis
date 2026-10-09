@@ -14,7 +14,7 @@ use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
 use crate::{collector, demo, model, paths, run, store};
-use app::{Action, App, Screen, BOOT_TICKS};
+use app::{Action, App, Input, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
@@ -49,6 +49,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(c) = &app.confirm {
         overlays::confirm(f, body, app, c);
     }
+    if let Some(a) = &app.answer {
+        overlays::answer(f, body, app, a);
+    }
     if app.show_help {
         centered(
             f,
@@ -58,7 +61,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
                 "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
-                "        p prompt the selected agent (Agents view)",
+                "        p prompt the selected agent, or answer it when blocked (Agents view)",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
@@ -229,7 +232,20 @@ fn event_loop(
     let mut update = SourceUpdate::default();
     let mut resolver = Resolver::default();
     let mut dirty = true;
+    let mut screen_read = Instant::now();
     while !app.quit {
+        // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
+        if let Some(a) = app.answer.as_mut() {
+            if a.screen.is_empty() || screen_read.elapsed() >= Duration::from_millis(500) {
+                a.screen = if me.demo {
+                    demo::question().into()
+                } else {
+                    read_screen(&a.pane_id)
+                        .unwrap_or_else(|e| format!("could not read the agent: {e}"))
+                };
+                screen_read = Instant::now();
+            }
+        }
         for msg in watch.try_iter() {
             match msg {
                 WatchMsg::Snapshot(s) => {
@@ -288,7 +304,12 @@ fn event_loop(
         if me.demo
             && matches!(
                 app.action,
-                Some(Action::FocusPane(_) | Action::Prompt { .. } | Action::Run { .. })
+                Some(
+                    Action::FocusPane(_)
+                        | Action::Prompt { .. }
+                        | Action::Input { .. }
+                        | Action::Run { .. }
+                )
             )
         {
             app.action = None;
@@ -302,6 +323,27 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
+            Some(Action::Input { pane_id, input }) => {
+                let sock = herdr::socket_path();
+                let sent = match input {
+                    Input::Key(k) => herdr::client::request(
+                        &sock,
+                        "agent.send_keys",
+                        serde_json::json!({"target": pane_id, "keys": [k]}),
+                    ),
+                    Input::Text(t) => herdr::client::request(
+                        &sock,
+                        "pane.send_text",
+                        serde_json::json!({"pane_id": pane_id, "text": t}),
+                    ),
+                };
+                if let Err(e) = sent {
+                    app.status = Some(format!("could not type into the agent: {e}"));
+                }
+                // Show the agent's reaction on the next pass.
+                screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                    .unwrap_or_else(Instant::now);
+            }
             Some(Action::Prompt {
                 pane_id,
                 agent,
@@ -345,6 +387,16 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+/// The visible terminal text of the agent in `pane_id`.
+fn read_screen(pane_id: &str) -> anyhow::Result<String> {
+    let params = serde_json::json!({"target": pane_id, "source": "visible"});
+    let result = herdr::client::request(&herdr::socket_path(), "agent.read", params)?;
+    Ok(result["read"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
 /// OSC 52 clipboard write; terminals without support ignore it and the status bar still shows the text.

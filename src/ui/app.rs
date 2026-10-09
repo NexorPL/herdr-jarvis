@@ -9,7 +9,7 @@ use crate::model::{AgentRow, EventRow, Model, Project, ThreadRow};
 use crate::pricing::Pricing;
 use crate::run::{self, Layout, Step, Target};
 use chrono::{DateTime, Duration, Local, Utc};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::path::PathBuf;
 
@@ -110,11 +110,56 @@ pub enum Action {
         agent: String,
         text: String,
     },
+    /// Type into the agent in `pane_id` (the answer popup).
+    Input {
+        pane_id: String,
+        input: Input,
+    },
     /// Send these steps to herdr, then focus the first new pane.
     Run {
         workspace_id: Option<String>,
         steps: Vec<Step>,
     },
+}
+
+/// A key for an agent: a herdr key name (`agent.send_keys`) or literal text (`pane.send_text`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Input {
+    Key(String),
+    Text(String),
+}
+
+impl Input {
+    /// Letters and digits go as key presses, so menus react to them; other characters as text,
+    /// which needs no herdr key name. `None` for keys that are not forwarded.
+    pub fn from_key(key: KeyEvent) -> Option<Input> {
+        let named = |s: &str| Some(Input::Key(s.into()));
+        match key.code {
+            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                named(&format!("ctrl+{}", c.to_ascii_lowercase()))
+            }
+            KeyCode::Char(c) if c.is_ascii_alphanumeric() => named(&c.to_string()),
+            KeyCode::Char(c) => Some(Input::Text(c.to_string())),
+            KeyCode::Enter => named("enter"),
+            KeyCode::Tab => named("tab"),
+            KeyCode::BackTab => named("shift+tab"),
+            KeyCode::Up => named("up"),
+            KeyCode::Down => named("down"),
+            KeyCode::Left => named("left"),
+            KeyCode::Right => named("right"),
+            KeyCode::Backspace => named("backspace"),
+            _ => None,
+        }
+    }
+}
+
+/// The answer popup over a blocked agent: its screen, refreshed by the event loop; while open
+/// every key but Esc goes to the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub pane_id: String,
+    pub agent: String,
+    pub screen: String,
 }
 
 /// What a form saves on Enter. `editing` indexes the list it edits; `None` adds.
@@ -251,6 +296,7 @@ pub struct App {
     pub form: Option<Form>,
     pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
+    pub answer: Option<Answer>,
     pub targets: Vec<Target>,
 }
 
@@ -290,6 +336,7 @@ impl App {
             form: None,
             confirm: None,
             picker: None,
+            answer: None,
             targets: Vec::new(),
         }
     }
@@ -514,6 +561,18 @@ impl App {
         }
         if self.confirm.is_some() {
             self.on_confirm_key(key);
+            return;
+        }
+        if let Some(a) = &self.answer {
+            match key.code {
+                KeyCode::Esc => self.answer = None,
+                _ => {
+                    self.action = Input::from_key(key).map(|input| Action::Input {
+                        pane_id: a.pane_id.clone(),
+                        input,
+                    })
+                }
+            }
             return;
         }
         if self.picker.is_some() {
@@ -755,7 +814,8 @@ impl App {
         }
     }
 
-    /// The prompt form for the selected agent. herdr refuses prompts to an agent waiting on a question.
+    /// The prompt form for the selected agent, or the answer popup when it waits on a question
+    /// (herdr refuses prompts then).
     fn prompt_form(&mut self) {
         let row = (self.screen != Screen::Core && self.tab() == Tab::Agents)
             .then(|| self.visible_agents().get(self.selected_row).copied())
@@ -766,9 +826,11 @@ impl App {
         };
         let agent = format!("{}/{}", p.name, a.pane.title());
         if a.pane.agent_status == AgentStatus::Blocked {
-            self.status = Some(format!(
-                "{agent} is waiting on a question: Enter jumps to it"
-            ));
+            self.answer = Some(Answer {
+                pane_id: a.pane.pane_id.clone(),
+                agent,
+                screen: String::new(),
+            });
             return;
         }
         self.form = Some(Form {
@@ -1335,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn p_prompts_the_selected_agent_unless_blocked() {
+    fn p_prompts_the_selected_agent_or_answers_a_blocked_one() {
         let mut app = sample_app();
         key(&mut app, KeyCode::Char('T'));
         key(&mut app, KeyCode::Char('p'));
@@ -1347,14 +1409,40 @@ mod tests {
                 .position(|(_, a)| (a.pane.agent_status == AgentStatus::Blocked) == s)
                 .unwrap()
         };
+        // Blocked: the answer popup, which sends every key but Esc to the agent.
         app.selected_row = row(&app, true);
+        let blocked = app.visible_agents()[app.selected_row]
+            .1
+            .pane
+            .pane_id
+            .clone();
         key(&mut app, KeyCode::Char('p'));
         assert!(app.form.is_none());
-        assert!(app
-            .status
-            .as_deref()
-            .unwrap()
-            .contains("waiting on a question"));
+        assert_eq!(app.answer.as_ref().unwrap().pane_id, blocked);
+        let sent = |app: &mut App, k: KeyEvent| {
+            app.on_key(k);
+            match app.action.take() {
+                Some(Action::Input { pane_id, input }) if pane_id == blocked => input,
+                other => panic!("{other:?}"),
+            }
+        };
+        let plain = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app, plain(KeyCode::Char('2'))),
+            Input::Key("2".into())
+        );
+        assert_eq!(
+            sent(&mut app, plain(KeyCode::Char('/'))),
+            Input::Text("/".into())
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::CONTROL);
+        assert_eq!(sent(&mut app, ctrl_c), Input::Key("ctrl+c".into()));
+        assert_eq!(
+            sent(&mut app, plain(KeyCode::Enter)),
+            Input::Key("enter".into())
+        );
+        key(&mut app, KeyCode::Esc);
+        assert!(app.answer.is_none() && app.action.is_none());
 
         app.selected_row = row(&app, false);
         let pane_id = app.visible_agents()[app.selected_row]

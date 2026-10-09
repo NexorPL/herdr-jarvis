@@ -88,7 +88,7 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
         hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
     }
     if app.tab() == Tab::Agents {
-        hint.push_str(" · p prompt");
+        hint.push_str(" · p prompt/answer");
     }
     if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
         hint.push_str(" · x run");

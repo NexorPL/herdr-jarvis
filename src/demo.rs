@@ -176,6 +176,22 @@ pub fn records(now: DateTime<Utc>) -> Vec<Record> {
         .collect()
 }
 
+/// What the blocked agent shows in the answer popup.
+pub fn question() -> &'static str {
+    "● I'll run the cart tests serially to catch the race.
+
+  Bash command
+
+    npm test -- cart.spec.ts --runInBand
+    Run the cart tests serially
+
+  Do you want to proceed?
+  ❯ 1. Yes
+    2. Yes, and don't ask again for npm test commands in /home/me/shop
+    3. No, and tell Claude what to do differently (esc)
+"
+}
+
 pub fn ideas() -> Vec<Idea> {
     let idea = |cwd: &str, name: &str, description: &str, status| Idea {
         project_key: normalize(cwd),
