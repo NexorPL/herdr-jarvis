@@ -14,6 +14,8 @@ open while you work. Its animated core: every project with herdr activity branch
 which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
 event timeline and token cost.
 
+![Jarvis: the core, a project's agents and a prompt sent from Jarvis](docs/images/jarvis.gif)
+
 Linux, macOS and Windows. herdr 0.9.0+.
 
 ## Install
@@ -46,6 +48,8 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 ```
 
 ## What you see
+
+![The core with seven projects, the most urgent at the top](docs/images/core.png)
 
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
@@ -134,7 +138,8 @@ herdr plugin action invoke jarvis.open
 ```
 
 `jarvis demo` (`cargo run -- demo`) runs the UI on made-up projects without herdr, for screenshots and
-recordings; nothing it does reaches herdr or your state directory.
+recordings (the images in this README come from it); nothing it does reaches herdr or your state
+directory.
 
 On Windows the running collector keeps `target/release/jarvis.exe` locked. `scripts/fetch-or-build.ps1`
 moves it aside before building; with plain `cargo build`, rename or stop it first
