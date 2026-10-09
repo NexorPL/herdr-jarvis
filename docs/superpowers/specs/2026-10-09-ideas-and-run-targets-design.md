@@ -40,7 +40,7 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
 
 - `Tab::Ideas` becomes the fifth tab: `5`, `Tab`/`BackTab` reach it like the others. `I` opens the global
   Ideas view (alongside `A`, `T`, `L`, `U`).
-- Project screen: the ideas of that project, in file order. Global view: every idea, with a project column;
+- Project screen: the ideas of that project, in status order (below). Global view: every idea, with a project column;
   `f` (project filter) and `/` (search over name and description) apply.
 - Keys on the Ideas tab:
   - `a` add. On the global view this needs a project filter (`f`), otherwise the status line says so.
@@ -50,6 +50,9 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
     `status` (`todo`, `doing`, `done`; a file written before statuses existed loads as `todo`), shown as
     `○ todo`, `◐ doing`, `✓ done` in a first column; done ideas are dimmed. Editing keeps the status.
   - `s` filters by status: all → todo → doing → done → all. It is separate from the agent state filter.
+  - The list shows doing ideas first, then todo, then done, each group in file order. Done ideas are folded
+    into one line (`── ✓ N done · c to show ──`) until `c` shows them; `c` folds them again. The done filter
+    shows them either way.
 - Form: an overlay with two single-line fields, Name and Description. `Tab`/`BackTab` move between fields,
   typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a status
   message), `Esc` cancels. While the form is open it takes every key. Ideas and run targets share this form.

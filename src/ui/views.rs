@@ -85,7 +85,7 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
         hint.push_str(" · w range");
     }
     if app.tab() == Tab::Ideas {
-        hint.push_str(" · a add · e edit · d delete · Space status · s filter");
+        hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
     }
     if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
         hint.push_str(" · x run");
@@ -395,15 +395,28 @@ fn timeline(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
 
 fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let rows = app.visible_ideas();
+    let folded = app.folded_done();
     if rows.is_empty() {
-        let msg = if app.search.is_empty() {
-            "no ideas yet · a to add"
+        let msg = if folded > 0 {
+            format!("all {folded} ideas here are done · c to show")
+        } else if app.search.is_empty() {
+            "no ideas yet · a to add".into()
         } else {
-            "no ideas match the search"
+            "no ideas match the search".into()
         };
-        return empty(f, area, msg, pal);
+        return empty(f, area, &msg, pal);
     }
-    let [list, preview] = Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).areas(area);
+    let [list, fold, preview] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(u16::from(folded > 0)),
+        Constraint::Length(5),
+    ])
+    .areas(area);
+    f.render_widget(
+        Paragraph::new(format!("── ✓ {folded} done · c to show ──"))
+            .style(Style::new().fg(pal.dim)),
+        fold,
+    );
     let global = matches!(app.screen, Screen::Global(_));
     let body: Vec<Row> = rows
         .iter()
@@ -634,6 +647,30 @@ mod tests {
         assert!(out.contains("alpha"));
         assert!(out.contains("keep prices for 24h"));
         assert!(out.contains("a add"));
+    }
+
+    #[test]
+    fn done_ideas_fold_into_one_line() {
+        let mut app = sample_app();
+        let done = crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Shipped".into(),
+            description: String::new(),
+            status: crate::ideas::Status::Done,
+        };
+        app.ideas = vec![done.clone()];
+        app.screen = Screen::Global(Tab::Ideas);
+        assert!(screen(&app, 120, 30).contains("all 1 ideas here are done · c to show"));
+        app.ideas.push(crate::ideas::Idea {
+            name: "Next".into(),
+            status: crate::ideas::Status::Todo,
+            ..done
+        });
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("Next"));
+        assert!(!out.contains("Shipped"));
+        assert!(out.contains("── ✓ 1 done · c to show ──"));
     }
 
     #[test]

@@ -15,12 +15,13 @@ pub struct Idea {
     pub status: Status,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Declaration order is list order: what is in progress first, done last.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    Doing,
     #[default]
     Todo,
-    Doing,
     Done,
 }
 

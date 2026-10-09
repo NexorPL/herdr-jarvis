@@ -216,6 +216,8 @@ pub struct App {
     pub search_editing: bool,
     pub state_filter: Option<AgentStatus>,
     pub idea_filter: Option<IdeaStatus>,
+    /// Done ideas are folded below the list until `c` shows them.
+    pub show_done: bool,
     pub range: Range,
     pub project_filter: Option<String>,
     pub show_help: bool,
@@ -256,6 +258,7 @@ impl App {
             search_editing: false,
             state_filter: None,
             idea_filter: None,
+            show_done: false,
             range: Range::Today,
             project_filter: None,
             show_help: false,
@@ -418,21 +421,37 @@ impl App {
             .collect()
     }
 
-    /// Ideas in scope that match the search, with their index into `ideas`.
+    /// Ideas in scope that match the filters and the search, doing first, then todo, then done (only when
+    /// shown with `c` or filtered for), with their index into `ideas`.
     pub fn visible_ideas(&self) -> Vec<(usize, &Idea)> {
+        let mut rows: Vec<_> = self
+            .matching_ideas()
+            .filter(|(_, i)| !self.folds(i))
+            .collect();
+        rows.sort_by_key(|(_, i)| i.status);
+        rows
+    }
+
+    /// Done ideas folded away below the list.
+    pub fn folded_done(&self) -> usize {
+        self.matching_ideas().filter(|(_, i)| self.folds(i)).count()
+    }
+
+    fn folds(&self, i: &Idea) -> bool {
+        i.status == IdeaStatus::Done && !self.show_done && self.idea_filter.is_none()
+    }
+
+    fn matching_ideas(&self) -> impl Iterator<Item = (usize, &Idea)> + '_ {
         let scope = self.scope();
         let q = self.search.to_lowercase();
-        self.ideas
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| scope.is_none_or(|k| i.project_key == k))
+        (self.ideas.iter().enumerate())
+            .filter(move |(_, i)| scope.is_none_or(|k| i.project_key == k))
             .filter(|(_, i)| self.idea_filter.is_none_or(|s| i.status == s))
-            .filter(|(_, i)| {
+            .filter(move |(_, i)| {
                 q.is_empty()
                     || i.name.to_lowercase().contains(&q)
                     || i.description.to_lowercase().contains(&q)
             })
-            .collect()
     }
 
     pub fn row_count(&self) -> usize {
@@ -639,6 +658,10 @@ impl App {
                     self.action = Some(Action::SaveIdeas);
                     self.clamp();
                 }
+            }
+            KeyCode::Char('c') if self.tab() == Tab::Ideas => {
+                self.show_done = !self.show_done;
+                self.clamp();
             }
             KeyCode::Char('s') if self.tab() == Tab::Ideas => {
                 self.idea_filter = match self.idea_filter {
@@ -1304,6 +1327,39 @@ mod tests {
         key(&mut app, KeyCode::Char('s'));
         assert_eq!(app.idea_filter, None);
         assert_eq!(app.state_filter, None);
+    }
+
+    #[test]
+    fn ideas_list_doing_then_todo_and_fold_done_until_c() {
+        let mut app = sample_app();
+        app.ideas = vec![
+            idea(&app, 0, "todo"),
+            idea(&app, 0, "done"),
+            idea(&app, 0, "doing"),
+        ];
+        app.ideas[1].status = IdeaStatus::Done;
+        app.ideas[2].status = IdeaStatus::Doing;
+        key(&mut app, KeyCode::Char('I'));
+        let names = |app: &App| -> Vec<String> {
+            (app.visible_ideas().iter())
+                .map(|(_, i)| i.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&app), ["doing", "todo"]);
+        assert_eq!(app.folded_done(), 1);
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(names(&app), ["doing", "todo", "done"]);
+        assert_eq!(app.folded_done(), 0);
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Char('s'));
+        key(&mut app, KeyCode::Char('s'));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.idea_filter, Some(IdeaStatus::Done));
+        assert_eq!(
+            names(&app),
+            ["done"],
+            "the done filter shows them folded or not"
+        );
     }
 
     #[test]
