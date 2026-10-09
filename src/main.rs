@@ -2,6 +2,7 @@ mod collector;
 mod config;
 mod events;
 mod herdr;
+mod ideas;
 mod log;
 mod model;
 mod paths;
