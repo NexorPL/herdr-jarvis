@@ -30,8 +30,9 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
   Ideas belong to the project, not to an agent.
 - `project_name` is stored so ideas of projects with no live agents still show a readable label.
 - The TUI loads the file at start and keeps the list in memory. Every change rewrites the whole file
-  atomically (write `ideas.json.tmp`, then rename). A missing file is an empty list; an unreadable file is
-  shown in the status line and treated as empty, without overwriting it until the next successful edit.
+  atomically (write `ideas.json.tmp`, then rename). A missing file is an empty list. An unreadable file is
+  copied to `ideas.json.bad` (so the next edit cannot lose it), reported in the status line and treated as
+  empty.
 - Several Jarvis panes writing at once: last write wins. Jarvis normally runs as one pane.
 
 ### UI
@@ -101,7 +102,7 @@ panes stay. Nothing crashes the TUI.
 
 ## 4. Testing
 
-- Ideas: load/save round trip, missing file, unreadable file is not overwritten on load.
+- Ideas: load/save round trip, missing file, unreadable file is backed up to `ideas.json.bad`.
 - `run.toml` parser: defaults, env, missing fields.
 - `App` key handling: Ideas tab add/edit/delete flow, global add needs a filter, picker toggling, select all,
   layout choice, running targets skipped.
