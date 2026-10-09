@@ -39,11 +39,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Core => hud::draw_core(f, body, app),
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
     }
+    if let Some(p) = &app.picker {
+        overlays::picker(f, body, app, p);
+    }
     if let Some(form) = &app.form {
         overlays::form(f, body, app, form);
     }
-    if let Some(p) = &app.picker {
-        overlays::picker(f, body, app, p);
+    if let Some(c) = &app.confirm {
+        overlays::confirm(f, body, app, c);
     }
     if app.show_help {
         centered(
@@ -55,7 +58,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
-                "Ideas:  a add · e or Enter edit · d delete",
+                "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "Run:    x start targets from .jarvis/run.toml (project screen, agent rows)",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
@@ -373,6 +376,20 @@ mod tests {
         assert!(out.contains("Export"));
         assert!(out.contains("usage to CSV"));
         assert!(out.contains("Enter save"));
+    }
+
+    #[test]
+    fn draws_the_delete_popup_with_no_selected() {
+        let mut app = sample_app();
+        app.confirm = Some(crate::ui::app::Confirm {
+            what: crate::ui::app::Doomed::Idea(0),
+            name: "Cache".into(),
+            yes: false,
+        });
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("Delete \"Cache\"?"), "{out}");
+        assert!(out.contains("[ Yes ]"));
+        assert!(out.contains("[ No ]"));
     }
 
     #[test]

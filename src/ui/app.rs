@@ -124,6 +124,20 @@ pub struct Form {
     pub focus: usize,
 }
 
+/// What the delete popup removes, by index into its list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doomed {
+    Idea(usize),
+}
+
+/// The delete popup; while open it takes every key. `yes` is the selected button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+    pub what: Doomed,
+    pub name: String,
+    pub yes: bool,
+}
+
 /// Where `x` starts targets: the project's name, the agent's workspace and the folder holding `.jarvis/run.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunContext {
@@ -206,8 +220,7 @@ pub struct App {
     pub last_left: DateTime<Utc>,
     pub ideas: Vec<Idea>,
     pub form: Option<Form>,
-    /// Index into `ideas` waiting for `y` to be deleted.
-    pub confirm_delete: Option<usize>,
+    pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
 }
 
@@ -243,7 +256,7 @@ impl App {
             last_left: Utc::now(),
             ideas: Vec::new(),
             form: None,
-            confirm_delete: None,
+            confirm: None,
             picker: None,
         }
     }
@@ -449,17 +462,12 @@ impl App {
             self.on_form_key(key);
             return;
         }
-        if self.picker.is_some() {
-            self.on_picker_key(key);
+        if self.confirm.is_some() {
+            self.on_confirm_key(key);
             return;
         }
-        if let Some(i) = self.confirm_delete.take() {
-            self.status = None;
-            if key.code == KeyCode::Char('y') && i < self.ideas.len() {
-                self.ideas.remove(i);
-                self.action = Some(Action::SaveIdeas);
-                self.clamp();
-            }
+        if self.picker.is_some() {
+            self.on_picker_key(key);
             return;
         }
         if self.search_editing {
@@ -614,8 +622,11 @@ impl App {
                 let target = (self.visible_ideas().get(self.selected_row))
                     .map(|(i, idea)| (*i, idea.name.clone()));
                 if let Some((i, name)) = target {
-                    self.status = Some(format!("delete \"{name}\"? y/n"));
-                    self.confirm_delete = Some(i);
+                    self.confirm = Some(Confirm {
+                        what: Doomed::Idea(i),
+                        name,
+                        yes: false,
+                    });
                 }
             }
             KeyCode::Char('x') => match self.run_context() {
@@ -762,6 +773,40 @@ impl App {
             steps: run::plan(&p.ctx.project, &p.ctx.root, &to_start, layout),
             workspace_id: p.ctx.workspace_id,
         });
+    }
+
+    fn on_confirm_key(&mut self, key: KeyEvent) {
+        let Some(c) = self.confirm.as_mut() else {
+            return;
+        };
+        let delete = match key.code {
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Char('h' | 'l') => {
+                c.yes = !c.yes;
+                return;
+            }
+            KeyCode::Enter => c.yes,
+            KeyCode::Char('y') => true,
+            KeyCode::Char('n') | KeyCode::Esc => false,
+            _ => return,
+        };
+        let Some(c) = self.confirm.take() else {
+            return;
+        };
+        if !delete {
+            return;
+        }
+        match c.what {
+            Doomed::Idea(i) if i < self.ideas.len() => {
+                self.ideas.remove(i);
+                self.action = Some(Action::SaveIdeas);
+                self.clamp();
+            }
+            Doomed::Idea(_) => {}
+        }
     }
 
     fn add_idea(&mut self) {
@@ -1144,14 +1189,55 @@ mod tests {
         assert_eq!(app.action.take(), Some(Action::SaveIdeas));
 
         key(&mut app, KeyCode::Char('d'));
-        assert_eq!(app.status.as_deref(), Some("delete \"Cache\"? y/n"));
+        assert_eq!(
+            app.confirm,
+            Some(Confirm {
+                what: Doomed::Idea(0),
+                name: "Cache".into(),
+                yes: false,
+            })
+        );
         key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.confirm, None);
         assert_eq!(app.ideas.len(), 1);
         assert_eq!(app.action, None);
         key(&mut app, KeyCode::Char('d'));
         key(&mut app, KeyCode::Char('y'));
         assert!(app.ideas.is_empty());
         assert_eq!(app.action, Some(Action::SaveIdeas));
+    }
+
+    #[test]
+    fn delete_popup_defaults_to_no() {
+        let mut app = sample_app();
+        app.ideas = vec![idea(&app, 0, "keep"), idea(&app, 0, "drop")];
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Ideas,
+        };
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('q'));
+        assert!(!app.quit, "the popup takes every key");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.confirm, None, "Enter on the default No cancels");
+        assert_eq!(app.ideas.len(), 2);
+
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.confirm, None);
+        assert!(matches!(app.screen, Screen::Project { .. }));
+        assert_eq!(app.ideas.len(), 2);
+
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Right);
+        assert!(app.confirm.as_ref().unwrap().yes);
+        key(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.ideas, vec![idea(&app, 0, "keep")]);
+        assert_eq!(app.action, Some(Action::SaveIdeas));
+        assert_eq!(app.selected_row, 0);
     }
 
     #[test]

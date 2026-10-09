@@ -1,6 +1,6 @@
-//! Popups drawn over the current screen: forms and the run picker.
+//! Popups drawn over the current screen: forms, the delete popup and the run picker.
 
-use super::app::{App, Form, Picker};
+use super::app::{App, Confirm, Form, Picker};
 use super::theme::Palette;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -80,4 +80,26 @@ pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
         Style::new().fg(pal.accent),
     )));
     popup(f, area, &format!(" run · {} ", p.ctx.project), lines, pal);
+}
+
+pub fn confirm(f: &mut Frame, area: Rect, app: &App, c: &Confirm) {
+    let pal = &app.palette;
+    let button = |label: &'static str, on: bool| {
+        if on {
+            Span::styled(label, Style::new().fg(pal.accent).bold().reversed())
+        } else {
+            Span::styled(label, Style::new().fg(pal.dim))
+        }
+    };
+    let lines = vec![
+        Line::from(format!("Delete \"{}\"?", c.name)).centered(),
+        Line::raw(""),
+        Line::from(vec![
+            button("[ Yes ]", c.yes),
+            Span::raw("   "),
+            button("[ No ]", !c.yes),
+        ])
+        .centered(),
+    ];
+    popup(f, area, " delete ", lines, pal);
 }
