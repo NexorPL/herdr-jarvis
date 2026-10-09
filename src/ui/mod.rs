@@ -59,7 +59,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
-                "Run:    x start targets from .jarvis/run.toml (project screen, agent rows)",
+                "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -153,9 +153,12 @@ pub fn run() -> anyhow::Result<()> {
         state.join("collector.lock"),
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
-    let ideas_path = state.join("ideas.json");
-    match store::load(&ideas_path) {
+    match store::load(&state.join("ideas.json")) {
         Ok(list) => app.ideas = list,
+        Err(e) => app.status = Some(e),
+    }
+    match store::load(&state.join("targets.json")) {
+        Ok(list) => app.targets = list,
         Err(e) => app.status = Some(e),
     }
     let mut terminal = ratatui::init();
@@ -163,7 +166,7 @@ pub fn run() -> anyhow::Result<()> {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
     };
-    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &ideas_path);
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
     ratatui::restore();
     result
 }
@@ -180,7 +183,7 @@ fn event_loop(
     watch: &Receiver<WatchMsg>,
     sources: &Receiver<SourceUpdate>,
     me: &Me,
-    ideas_path: &Path,
+    state: &Path,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let mut tab_label = String::new();
@@ -253,13 +256,14 @@ fn event_loop(
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
             Some(Action::SaveIdeas) => {
-                if let Err(e) = store::save(ideas_path, &app.ideas) {
+                if let Err(e) = store::save(&state.join("ideas.json"), &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));
                 }
             }
-            Some(Action::LoadTargets(ctx)) => {
-                let targets = run::load(&ctx.root);
-                app.open_picker(ctx, targets);
+            Some(Action::SaveTargets) => {
+                if let Err(e) = store::save(&state.join("targets.json"), &app.targets) {
+                    app.status = Some(format!("could not save run targets: {e}"));
+                }
             }
             Some(Action::Run {
                 workspace_id,
@@ -326,6 +330,7 @@ pub(crate) fn render(w: u16, h: u16, draw: impl FnOnce(&mut ratatui::Frame)) -> 
 mod tests {
     use super::*;
     use crate::ui::app::{sample_app, Screen, Tab};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn draws_empty_model() {
@@ -398,26 +403,43 @@ mod tests {
         app.model
             .pane_labels
             .insert("alpha:api".into(), "w1:p7".into());
-        app.open_picker(
-            crate::ui::app::RunContext {
-                project: "alpha".into(),
-                workspace_id: Some("w1".into()),
-                root: "/home/u/alpha".into(),
-            },
-            crate::run::parse(
-                "[[target]]\nname = \"api\"\ncommand = \"cargo run\"\n\
-                 [[target]]\nname = \"web\"\ncommand = \"pnpm dev\"\n",
-            ),
-        );
+        let alpha = app.model.projects[1].key.clone();
+        let target = |name: &str, command: &str| crate::run::Target {
+            project_key: alpha.clone(),
+            name: name.into(),
+            command: command.into(),
+            cwd: String::new(),
+            env: Default::default(),
+        };
+        app.targets = vec![target("api", "cargo run"), target("web", "pnpm dev")];
+        app.screen = Screen::Project {
+            key: alpha.clone(),
+            tab: Tab::Agents,
+        };
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         let out = render(100, 30, |f| draw(f, &app));
         assert!(out.contains("run · alpha"));
         assert!(out.contains("[ ] api"));
         assert!(out.contains("● running"));
         assert!(out.contains("pnpm dev"));
         assert!(out.contains("Space select"));
+        assert!(out.contains("n new · e edit · d delete"));
         app.picker.as_mut().unwrap().choosing_layout = true;
         let out = render(100, 30, |f| draw(f, &app));
         assert!(out.contains("s side by side"));
+    }
+
+    #[test]
+    fn draws_an_empty_picker_with_a_hint() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Agents,
+        };
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("run · alpha"));
+        assert!(out.contains("no targets yet · n to add"));
     }
 
     #[test]

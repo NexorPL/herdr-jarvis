@@ -53,8 +53,9 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
 
 pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
     let pal = &app.palette;
-    let mut lines: Vec<Line<'static>> = (p.targets.iter().enumerate())
-        .map(|(i, t)| {
+    let targets = app.picker_targets();
+    let mut lines: Vec<Line<'static>> = (targets.iter().enumerate())
+        .map(|(i, (_, t))| {
             let mark = if p.chosen[i] { "[x]" } else { "[ ]" };
             let mut spans = vec![
                 Span::styled(
@@ -70,12 +71,18 @@ pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
             Line::from(spans)
         })
         .collect();
+    if targets.is_empty() {
+        lines.push(Line::styled(
+            "no targets yet · n to add",
+            Style::new().fg(pal.dim),
+        ));
+    }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         if p.choosing_layout {
             "t one tab per target · s side by side in one tab · Esc back"
         } else {
-            "Space select · a all · Enter run · Esc close"
+            "Space select · a all · Enter run · n new · e edit · d delete · Esc close"
         },
         Style::new().fg(pal.accent),
     )));

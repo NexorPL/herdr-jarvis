@@ -32,6 +32,7 @@ pub fn save<T: Serialize>(path: &Path, items: &[T]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::ideas::Idea;
+    use crate::run::Target;
     use std::fs;
 
     fn idea(name: &str) -> Idea {
@@ -75,5 +76,22 @@ mod tests {
             fs::read_to_string(path.with_extension("json.bad")).unwrap(),
             "{not json"
         );
+    }
+
+    #[test]
+    fn targets_round_trip_and_env_is_optional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("targets.json");
+        fs::write(
+            &path,
+            r#"[{"project_key": "/home/u/alpha", "name": "web", "command": "pnpm dev", "cwd": ""}]"#,
+        )
+        .unwrap();
+        let mut targets = load::<Target>(&path).unwrap();
+        assert_eq!(targets[0].name, "web");
+        assert!(targets[0].env.is_empty());
+        targets[0].env.insert("PORT".into(), "3001".into());
+        save(&path, &targets).unwrap();
+        assert_eq!(load::<Target>(&path).unwrap(), targets);
     }
 }

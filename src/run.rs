@@ -1,70 +1,21 @@
-//! Run targets declared in `<root>/.jarvis/run.toml`, and the herdr requests that start them.
+//! Run targets (stored per project in `<state_dir>/targets.json`) and the herdr requests that start them.
 
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// One process of a project: a command and the directory (relative to the root) to run it in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One process of a project: a command and the directory (relative to the run root; empty is the root) to run it in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
+    pub project_key: String,
     pub name: String,
     pub command: String,
     pub cwd: String,
+    /// Edited by hand in `targets.json` only.
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-struct RunFile {
-    #[serde(default)]
-    target: Vec<RawTarget>,
-}
-
-#[derive(Deserialize)]
-struct RawTarget {
-    name: Option<String>,
-    command: Option<String>,
-    cwd: Option<String>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-}
-
-/// Errors are one line, for the status bar.
-pub fn parse(text: &str) -> Result<Vec<Target>, String> {
-    let file: RunFile = toml::from_str(text).map_err(|e| {
-        format!(
-            ".jarvis/run.toml: {}",
-            e.message().trim().replace('\n', "; ")
-        )
-    })?;
-    let targets = (file.target.into_iter().enumerate())
-        .map(|(i, t)| {
-            let name = t
-                .name
-                .ok_or_else(|| format!(".jarvis/run.toml: target #{} has no name", i + 1))?;
-            let command = t
-                .command
-                .ok_or_else(|| format!(".jarvis/run.toml: target \"{name}\" has no command"))?;
-            Ok(Target {
-                name,
-                command,
-                cwd: t.cwd.unwrap_or_else(|| ".".into()),
-                env: t.env,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    if targets.is_empty() {
-        return Err(".jarvis/run.toml has no [[target]] entries".into());
-    }
-    Ok(targets)
-}
-
-pub fn load(root: &Path) -> Result<Vec<Target>, String> {
-    let path = root.join(".jarvis").join("run.toml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("no run targets: {} ({e})", path.display()))?;
-    parse(&text)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +52,7 @@ pub fn plan(project: &str, root: &Path, targets: &[Target], layout: Layout) -> V
     let n = targets.len();
     (targets.iter().enumerate())
         .map(|(i, t)| {
-            let dir = if t.cwd == "." {
+            let dir = if t.cwd.is_empty() {
                 root.to_path_buf()
             } else {
                 root.join(&t.cwd)
@@ -177,55 +128,17 @@ pub fn execute(
 mod tests {
     use super::*;
 
-    const RUN_TOML: &str = r#"
-[[target]]
-name = "api"
-command = "cargo run"
-cwd = "services/api"
-env = { PORT = "3001" }
-color = "blue"
-
-[[target]]
-name = "web"
-command = "pnpm dev"
-"#;
-
     fn targets() -> Vec<Target> {
-        parse(RUN_TOML).unwrap()
-    }
-
-    #[test]
-    fn parses_targets_with_defaults_and_ignores_extra_keys() {
-        let t = targets();
-        assert_eq!(t.len(), 2);
-        assert_eq!(t[0].cwd, "services/api");
-        assert_eq!(t[0].env.get("PORT").map(String::as_str), Some("3001"));
-        assert_eq!(t[1].cwd, ".");
-        assert!(t[1].env.is_empty());
-    }
-
-    #[test]
-    fn parse_errors_name_the_target_and_stay_on_one_line() {
-        let err = parse("[[target]]\nname = \"api\"\n").unwrap_err();
-        assert_eq!(err, ".jarvis/run.toml: target \"api\" has no command");
-        let err = parse("[[target]]\ncommand = \"x\"\n").unwrap_err();
-        assert_eq!(err, ".jarvis/run.toml: target #1 has no name");
-        let err = parse("[[target]\nname = ").unwrap_err();
-        assert!(err.starts_with(".jarvis/run.toml: "), "{err}");
-        assert!(!err.contains('\n'), "{err}");
-        assert_eq!(
-            parse("").unwrap_err(),
-            ".jarvis/run.toml has no [[target]] entries"
-        );
-    }
-
-    #[test]
-    fn load_reads_from_the_jarvis_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(load(tmp.path()).unwrap_err().contains("no run targets"));
-        std::fs::create_dir_all(tmp.path().join(".jarvis")).unwrap();
-        std::fs::write(tmp.path().join(".jarvis/run.toml"), RUN_TOML).unwrap();
-        assert_eq!(load(tmp.path()).unwrap(), targets());
+        let target = |name: &str, command: &str, cwd: &str| Target {
+            project_key: "/home/u/alpha".into(),
+            name: name.into(),
+            command: command.into(),
+            cwd: cwd.into(),
+            env: BTreeMap::new(),
+        };
+        let mut api = target("api", "cargo run", "services/api");
+        api.env.insert("PORT".into(), "3001".into());
+        vec![api, target("web", "pnpm dev", "")]
     }
 
     #[test]

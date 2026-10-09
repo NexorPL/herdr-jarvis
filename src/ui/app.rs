@@ -96,8 +96,8 @@ pub enum Action {
     Copy(String),
     /// `ideas` changed; write them to disk.
     SaveIdeas,
-    /// Read `.jarvis/run.toml` under the context's root and open the picker.
-    LoadTargets(RunContext),
+    /// `targets` changed; write them to disk.
+    SaveTargets,
     /// Send these steps to herdr, then focus the first new pane.
     Run {
         workspace_id: Option<String>,
@@ -112,6 +112,10 @@ pub enum FormKind {
         editing: Option<usize>,
         project_key: String,
         project_name: String,
+    },
+    Target {
+        editing: Option<usize>,
+        project_key: String,
     },
 }
 
@@ -128,6 +132,7 @@ pub struct Form {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Doomed {
     Idea(usize),
+    Target(usize),
 }
 
 /// The delete popup; while open it takes every key. `yes` is the selected button.
@@ -138,19 +143,20 @@ pub struct Confirm {
     pub yes: bool,
 }
 
-/// Where `x` starts targets: the project's name, the agent's workspace and the folder holding `.jarvis/run.toml`.
+/// Where `x` starts targets: the project (key and name), the agent's workspace and the run root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunContext {
+    pub project_key: String,
     pub project: String,
     pub workspace_id: Option<String>,
     pub root: PathBuf,
 }
 
-/// The run-target popup; while open it takes every key.
+/// The run-target popup; while open it takes every key. Lists `App::picker_targets`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picker {
     pub ctx: RunContext,
-    pub targets: Vec<Target>,
+    /// One per row of `App::picker_targets`.
     pub chosen: Vec<bool>,
     pub cursor: usize,
     pub choosing_layout: bool,
@@ -222,6 +228,7 @@ pub struct App {
     pub form: Option<Form>,
     pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
+    pub targets: Vec<Target>,
 }
 
 impl App {
@@ -258,6 +265,7 @@ impl App {
             form: None,
             confirm: None,
             picker: None,
+            targets: Vec::new(),
         }
     }
 
@@ -630,7 +638,17 @@ impl App {
                 }
             }
             KeyCode::Char('x') => match self.run_context() {
-                Some(ctx) => self.action = Some(Action::LoadTargets(ctx)),
+                Some(ctx) => {
+                    let n = (self.targets.iter())
+                        .filter(|t| t.project_key == ctx.project_key)
+                        .count();
+                    self.picker = Some(Picker {
+                        ctx,
+                        chosen: vec![false; n],
+                        cursor: 0,
+                        choosing_layout: false,
+                    });
+                }
                 None => {
                     self.status = Some("x runs targets: open a project or select an agent".into())
                 }
@@ -694,6 +712,7 @@ impl App {
         };
         let root = (agent.and_then(|a| a.worktree.clone())).unwrap_or_else(|| project.root.clone());
         Some(RunContext {
+            project_key: project.key.clone(),
             project: project.name.clone(),
             workspace_id: agent
                 .or(project.agents.first())
@@ -702,26 +721,21 @@ impl App {
         })
     }
 
-    pub fn open_picker(&mut self, ctx: RunContext, targets: Result<Vec<Target>, String>) {
-        match targets {
-            Ok(targets) => {
-                self.picker = Some(Picker {
-                    chosen: vec![false; targets.len()],
-                    ctx,
-                    targets,
-                    cursor: 0,
-                    choosing_layout: false,
-                })
-            }
-            Err(e) => self.status = Some(e),
-        }
+    /// The open picker's targets: those of its project, with their index into `targets`.
+    pub fn picker_targets(&self) -> Vec<(usize, &Target)> {
+        let Some(p) = &self.picker else {
+            return Vec::new();
+        };
+        (self.targets.iter().enumerate())
+            .filter(|(_, t)| t.project_key == p.ctx.project_key)
+            .collect()
     }
 
     fn on_picker_key(&mut self, key: KeyEvent) {
+        let last = self.picker_targets().len().saturating_sub(1);
         let Some(p) = self.picker.as_mut() else {
             return;
         };
-        let last = p.targets.len().saturating_sub(1);
         match (p.choosing_layout, key.code) {
             (true, KeyCode::Char('t')) => self.start_targets(Layout::Tabs),
             (true, KeyCode::Char('s')) => self.start_targets(Layout::Split),
@@ -739,6 +753,18 @@ impl App {
                 let all = p.chosen.iter().all(|c| *c);
                 p.chosen.fill(!all);
             }
+            (false, KeyCode::Char('n')) => self.target_form(false),
+            (false, KeyCode::Char('e')) => self.target_form(true),
+            (false, KeyCode::Char('d')) => {
+                let cursor = p.cursor;
+                if let Some((i, t)) = self.picker_targets().get(cursor) {
+                    self.confirm = Some(Confirm {
+                        what: Doomed::Target(*i),
+                        name: t.name.clone(),
+                        yes: false,
+                    });
+                }
+            }
             (false, KeyCode::Enter) => match p.chosen.iter().filter(|c| **c).count() {
                 0 => {}
                 1 => self.start_targets(Layout::Tabs),
@@ -750,16 +776,19 @@ impl App {
 
     /// Starts the chosen targets that are not running yet; focuses a running one when none is left.
     fn start_targets(&mut self, layout: Layout) {
-        let Some(p) = self.picker.take() else {
+        let Some(p) = self.picker.as_ref() else {
             return;
         };
-        let (running, to_start): (Vec<&Target>, Vec<&Target>) = (p.targets.iter().zip(&p.chosen))
+        let ctx = p.ctx.clone();
+        let (running, to_start): (Vec<Target>, Vec<Target>) = (self.picker_targets().into_iter())
+            .zip(&p.chosen)
             .filter(|(_, chosen)| **chosen)
-            .map(|(t, _)| t)
-            .partition(|t| self.running_pane(&p.ctx.project, &t.name).is_some());
+            .map(|((_, t), _)| t.clone())
+            .partition(|t| self.running_pane(&ctx.project, &t.name).is_some());
+        self.picker = None;
         if to_start.is_empty() {
             self.action = (running.first())
-                .and_then(|t| self.running_pane(&p.ctx.project, &t.name))
+                .and_then(|t| self.running_pane(&ctx.project, &t.name))
                 .cloned()
                 .map(Action::FocusPane);
             return;
@@ -768,10 +797,37 @@ impl App {
             let names: Vec<&str> = running.iter().map(|t| t.name.as_str()).collect();
             self.status = Some(format!("already running: {}", names.join(", ")));
         }
-        let to_start: Vec<Target> = to_start.into_iter().cloned().collect();
         self.action = Some(Action::Run {
-            steps: run::plan(&p.ctx.project, &p.ctx.root, &to_start, layout),
-            workspace_id: p.ctx.workspace_id,
+            steps: run::plan(&ctx.project, &ctx.root, &to_start, layout),
+            workspace_id: ctx.workspace_id,
+        });
+    }
+
+    /// The target form over the picker: a new target, or (`edit`) the one under the cursor.
+    fn target_form(&mut self, edit: bool) {
+        let Some(p) = &self.picker else {
+            return;
+        };
+        let (editing, t) = match (edit, self.picker_targets().get(p.cursor)) {
+            (false, _) => (
+                None,
+                Target {
+                    project_key: p.ctx.project_key.clone(),
+                    ..Target::default()
+                },
+            ),
+            (true, Some((i, t))) => (Some(*i), (*t).clone()),
+            (true, None) => return,
+        };
+        let verb = if edit { "edit" } else { "new" };
+        self.form = Some(Form {
+            title: format!(" {verb} target · {} ", p.ctx.project),
+            kind: FormKind::Target {
+                editing,
+                project_key: t.project_key,
+            },
+            fields: vec![("name", t.name), ("command", t.command), ("cwd", t.cwd)],
+            focus: 0,
         });
     }
 
@@ -805,7 +861,17 @@ impl App {
                 self.action = Some(Action::SaveIdeas);
                 self.clamp();
             }
-            Doomed::Idea(_) => {}
+            Doomed::Target(i) if i < self.targets.len() => {
+                self.targets.remove(i);
+                if let Some(p) = self.picker.as_mut() {
+                    if p.cursor < p.chosen.len() {
+                        p.chosen.remove(p.cursor);
+                    }
+                    p.cursor = p.cursor.min(p.chosen.len().saturating_sub(1));
+                }
+                self.action = Some(Action::SaveTargets);
+            }
+            _ => {}
         }
     }
 
@@ -876,28 +942,56 @@ impl App {
         let v: Vec<String> = (form.fields.iter())
             .map(|(_, s)| s.trim().to_string())
             .collect();
-        if v[0].is_empty() {
-            self.status = Some("an idea needs a name".into());
+        let (required, refusal) = match form.kind {
+            FormKind::Idea { .. } => (1, "an idea needs a name"),
+            FormKind::Target { .. } => (2, "a target needs a name and a command"),
+        };
+        if v[..required].iter().any(String::is_empty) {
+            self.status = Some(refusal.into());
             self.form = Some(form);
             return;
         }
-        let FormKind::Idea {
-            editing,
-            project_key,
-            project_name,
-        } = form.kind;
-        let idea = Idea {
-            name: v[0].clone(),
-            description: v[1].clone(),
-            project_key,
-            project_name,
-        };
-        match editing {
-            Some(i) if i < self.ideas.len() => self.ideas[i] = idea,
-            _ => self.ideas.push(idea),
-        }
         self.status = None;
-        self.action = Some(Action::SaveIdeas);
+        match form.kind {
+            FormKind::Idea {
+                editing,
+                project_key,
+                project_name,
+            } => {
+                let idea = Idea {
+                    name: v[0].clone(),
+                    description: v[1].clone(),
+                    project_key,
+                    project_name,
+                };
+                match editing {
+                    Some(i) if i < self.ideas.len() => self.ideas[i] = idea,
+                    _ => self.ideas.push(idea),
+                }
+                self.action = Some(Action::SaveIdeas);
+            }
+            FormKind::Target {
+                editing,
+                project_key,
+            } => {
+                let i = match editing {
+                    Some(i) if i < self.targets.len() => i,
+                    _ => {
+                        self.targets.push(Target {
+                            project_key,
+                            ..Target::default()
+                        });
+                        if let Some(p) = self.picker.as_mut() {
+                            p.chosen.push(false);
+                        }
+                        self.targets.len() - 1
+                    }
+                };
+                let t = &mut self.targets[i];
+                (t.name, t.command, t.cwd) = (v[0].clone(), v[1].clone(), v[2].clone());
+                self.action = Some(Action::SaveTargets);
+            }
+        }
     }
 }
 
@@ -1314,12 +1408,16 @@ mod tests {
         assert_eq!(app.ideas, vec![idea(&app, 0, "first")]);
     }
 
-    fn run_targets() -> Vec<Target> {
-        run::parse(
-            "[[target]]\nname = \"api\"\ncommand = \"cargo run\"\n\
-             [[target]]\nname = \"web\"\ncommand = \"pnpm dev\"\n",
-        )
-        .unwrap()
+    /// alpha's targets, as `alpha_picker` puts them first in `App::targets`.
+    fn run_targets(app: &App) -> Vec<Target> {
+        let target = |name: &str, command: &str| Target {
+            project_key: app.model.projects[1].key.clone(),
+            name: name.into(),
+            command: command.into(),
+            cwd: String::new(),
+            env: Default::default(),
+        };
+        vec![target("api", "cargo run"), target("web", "pnpm dev")]
     }
 
     /// alpha's project screen, Agents tab, its only agent selected.
@@ -1330,29 +1428,42 @@ mod tests {
         };
     }
 
-    fn open_picker(app: &mut App) -> RunContext {
+    /// Opens alpha's picker with alpha's two targets and one of beta's.
+    fn alpha_picker(app: &mut App) -> RunContext {
+        app.targets = run_targets(app);
+        app.targets.push(Target {
+            project_key: app.model.projects[0].key.clone(),
+            name: "beta-api".into(),
+            command: "make".into(),
+            cwd: String::new(),
+            env: Default::default(),
+        });
         alpha_agents(app);
         key(app, KeyCode::Char('x'));
-        let Some(Action::LoadTargets(ctx)) = app.action.take() else {
-            panic!("x should ask for targets");
-        };
-        app.open_picker(ctx.clone(), Ok(run_targets()));
-        ctx
+        app.picker.as_ref().expect("x opens the picker").ctx.clone()
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        app.picker_targets()
+            .iter()
+            .map(|(_, t)| t.name.clone())
+            .collect()
     }
 
     #[test]
-    fn x_asks_for_the_targets_of_the_selected_agents_worktree() {
+    fn x_opens_the_picker_for_the_selected_agents_worktree() {
         let mut app = sample_app();
         app.model.projects[1].agents[0].worktree = Some("/home/u/alpha-feat".into());
         alpha_agents(&mut app);
         key(&mut app, KeyCode::Char('x'));
         assert_eq!(
-            app.action,
-            Some(Action::LoadTargets(RunContext {
+            app.picker.as_ref().unwrap().ctx,
+            RunContext {
+                project_key: app.model.projects[1].key.clone(),
                 project: "alpha".into(),
                 workspace_id: Some("w1".into()),
                 root: PathBuf::from("/home/u/alpha-feat"),
-            }))
+            }
         );
     }
 
@@ -1364,9 +1475,7 @@ mod tests {
             tab: Tab::Threads,
         };
         key(&mut app, KeyCode::Char('x'));
-        let Some(Action::LoadTargets(ctx)) = app.action else {
-            panic!("x should ask for targets");
-        };
+        let ctx = &app.picker.as_ref().unwrap().ctx;
         assert_eq!(ctx.root, PathBuf::from(&app.model.projects[1].root));
         assert_eq!(ctx.workspace_id.as_deref(), Some("w1"));
     }
@@ -1376,30 +1485,135 @@ mod tests {
         let mut app = sample_app();
         key(&mut app, KeyCode::Char('T'));
         key(&mut app, KeyCode::Char('x'));
-        assert_eq!(app.action, None);
+        assert!(app.picker.is_none());
         assert!(app.status.as_deref().unwrap().contains("open a project"));
     }
 
     #[test]
-    fn missing_targets_go_to_the_status_line() {
+    fn x_opens_an_empty_picker_for_a_project_without_targets() {
         let mut app = sample_app();
         alpha_agents(&mut app);
         key(&mut app, KeyCode::Char('x'));
-        let Some(Action::LoadTargets(ctx)) = app.action.take() else {
-            panic!("x should ask for targets");
+        assert!(app.picker_targets().is_empty());
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('d'));
+        assert!(app.picker.is_some());
+        assert!(app.form.is_none() && app.confirm.is_none());
+        assert_eq!(app.action, None);
+    }
+
+    #[test]
+    fn picker_lists_only_the_projects_targets() {
+        let mut app = sample_app();
+        alpha_picker(&mut app);
+        assert_eq!(names(&app), ["api", "web"]);
+        key(&mut app, KeyCode::Esc);
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Agents,
         };
-        app.open_picker(
-            ctx,
-            Err("no run targets: /home/u/alpha/.jarvis/run.toml".into()),
+        key(&mut app, KeyCode::Char('x'));
+        assert_eq!(names(&app), ["beta-api"]);
+    }
+
+    #[test]
+    fn picker_adds_edits_and_deletes_targets() {
+        let mut app = sample_app();
+        alpha_agents(&mut app);
+        key(&mut app, KeyCode::Char('x'));
+        key(&mut app, KeyCode::Char('n'));
+        chars(&mut app, "api");
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "cargo run");
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "services/api");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.is_none());
+        assert!(app.picker.is_some(), "Enter returns to the picker");
+        assert_eq!(app.action.take(), Some(Action::SaveTargets));
+        assert_eq!(
+            app.targets,
+            vec![Target {
+                project_key: app.model.projects[1].key.clone(),
+                name: "api".into(),
+                command: "cargo run".into(),
+                cwd: "services/api".into(),
+                env: Default::default(),
+            }]
         );
-        assert!(app.picker.is_none());
-        assert!(app.status.as_deref().unwrap().contains("no run targets"));
+        assert_eq!(app.picker.as_ref().unwrap().chosen, [false]);
+
+        app.targets[0].env.insert("PORT".into(), "3001".into());
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::BackTab);
+        key(&mut app, KeyCode::BackTab);
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Backspace);
+        }
+        chars(&mut app, "test");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.action.take(), Some(Action::SaveTargets));
+        assert_eq!(app.targets[0].command, "cargo test");
+        assert_eq!(app.targets[0].cwd, "services/api");
+        assert_eq!(app.targets[0].env["PORT"], "3001", "env survives an edit");
+
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(
+            app.confirm,
+            Some(Confirm {
+                what: Doomed::Target(0),
+                name: "api".into(),
+                yes: false,
+            })
+        );
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.targets.len(), 1);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('y'));
+        assert!(app.targets.is_empty());
+        assert_eq!(app.action, Some(Action::SaveTargets));
+        assert!(app.picker.as_ref().unwrap().chosen.is_empty());
+    }
+
+    #[test]
+    fn target_form_needs_a_name_and_a_command() {
+        let mut app = sample_app();
+        alpha_agents(&mut app);
+        key(&mut app, KeyCode::Char('x'));
+        key(&mut app, KeyCode::Char('n'));
+        chars(&mut app, "api");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.is_some());
+        assert_eq!(
+            app.status.as_deref(),
+            Some("a target needs a name and a command")
+        );
+        key(&mut app, KeyCode::Esc);
+        assert!(app.form.is_none());
+        assert!(app.picker.is_some());
+        assert!(app.targets.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_target_keeps_the_other_choices() {
+        let mut app = sample_app();
+        alpha_picker(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(names(&app), ["web"]);
+        assert_eq!(app.picker.as_ref().unwrap().chosen, [true]);
+        assert_eq!(app.targets.len(), 2, "beta's target stays");
     }
 
     #[test]
     fn one_chosen_target_starts_in_its_own_tab() {
         let mut app = sample_app();
-        let ctx = open_picker(&mut app);
+        let ctx = alpha_picker(&mut app);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Char(' '));
         key(&mut app, KeyCode::Enter);
@@ -1408,7 +1622,7 @@ mod tests {
             app.action,
             Some(Action::Run {
                 workspace_id: Some("w1".into()),
-                steps: run::plan("alpha", &ctx.root, &run_targets()[1..], Layout::Tabs),
+                steps: run::plan("alpha", &ctx.root, &run_targets(&app)[1..], Layout::Tabs),
             })
         );
     }
@@ -1416,7 +1630,7 @@ mod tests {
     #[test]
     fn several_targets_ask_for_the_layout() {
         let mut app = sample_app();
-        let ctx = open_picker(&mut app);
+        let ctx = alpha_picker(&mut app);
         key(&mut app, KeyCode::Enter);
         assert!(app.action.is_none(), "nothing chosen, nothing happens");
         key(&mut app, KeyCode::Char('a'));
@@ -1430,7 +1644,7 @@ mod tests {
             app.action,
             Some(Action::Run {
                 workspace_id: Some("w1".into()),
-                steps: run::plan("alpha", &ctx.root, &run_targets(), Layout::Split),
+                steps: run::plan("alpha", &ctx.root, &run_targets(&app), Layout::Split),
             })
         );
     }
@@ -1441,12 +1655,12 @@ mod tests {
         app.model
             .pane_labels
             .insert("alpha:api".into(), "w1:p7".into());
-        open_picker(&mut app);
+        alpha_picker(&mut app);
         key(&mut app, KeyCode::Char(' '));
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.action.take(), Some(Action::FocusPane("w1:p7".into())));
 
-        let ctx = open_picker(&mut app);
+        let ctx = alpha_picker(&mut app);
         key(&mut app, KeyCode::Char('a'));
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('t'));
@@ -1454,7 +1668,7 @@ mod tests {
             app.action,
             Some(Action::Run {
                 workspace_id: Some("w1".into()),
-                steps: run::plan("alpha", &ctx.root, &run_targets()[1..], Layout::Tabs),
+                steps: run::plan("alpha", &ctx.root, &run_targets(&app)[1..], Layout::Tabs),
             })
         );
         assert_eq!(app.status.as_deref(), Some("already running: api"));
@@ -1463,7 +1677,7 @@ mod tests {
     #[test]
     fn picker_takes_every_key_and_esc_closes_it() {
         let mut app = sample_app();
-        open_picker(&mut app);
+        alpha_picker(&mut app);
         key(&mut app, KeyCode::Char('q'));
         key(&mut app, KeyCode::Char('T'));
         assert!(!app.quit);
