@@ -5,7 +5,13 @@ on:
 permissions:
   contents: write
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/check-version.sh "$GITHUB_REF_NAME"
   build:
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -46,3 +52,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          # Lists the PRs merged since the previous tag; their titles are Conventional Commits.
+          generate_release_notes: true
