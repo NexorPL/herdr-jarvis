@@ -1,5 +1,7 @@
 pub mod app;
 pub mod hud;
+mod line_edit;
+pub mod overlays;
 pub mod theme;
 pub mod views;
 
@@ -11,11 +13,10 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, model, paths};
+use crate::{collector, model, paths, run, store};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use std::fs::File;
 use std::io::Write;
@@ -39,6 +40,15 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Core => hud::draw_core(f, body, app),
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
     }
+    if let Some(p) = &app.picker {
+        overlays::picker(f, body, app, p);
+    }
+    if let Some(form) = &app.form {
+        overlays::form(f, body, app, form);
+    }
+    if let Some(c) = &app.confirm {
+        overlays::confirm(f, body, app, c);
+    }
     if app.show_help {
         centered(
             f,
@@ -46,9 +56,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             " help ",
             &[
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
-                "        A agents · T threads · L timeline · U usage (all projects)",
-                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-4 views",
+                "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
+                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
+                "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
+                "        Space todo → doing → done · s status filter · c show done",
+                "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -57,25 +70,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn centered(f: &mut Frame, area: Rect, title: &str, lines: &[&str], app: &App) {
-    let w = 84.min(area.width);
-    let h = (lines.len() as u16 + 2).min(area.height);
-    let rect = Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + (area.height - h) / 2,
-        w,
-        h,
-    );
-    f.render_widget(Clear, rect);
-    f.render_widget(
-        Paragraph::new(lines.iter().map(|l| Line::from(*l)).collect::<Vec<_>>())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::bordered()
-                    .title(title.to_string())
-                    .border_style(Style::new().fg(app.palette.accent)),
-            ),
-        rect,
-    );
+    let lines = lines.iter().map(|l| Line::from(l.to_string())).collect();
+    overlays::popup(f, area, title, lines, &app.palette);
 }
 
 #[derive(Default)]
@@ -159,12 +155,24 @@ pub fn run() -> anyhow::Result<()> {
         state.join("collector.lock"),
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
+    let mut errors = Vec::new();
+    match store::load(&state.join("ideas.json")) {
+        Ok(list) => app.ideas = list,
+        Err(e) => errors.push(e),
+    }
+    match store::load(&state.join("targets.json")) {
+        Ok(list) => app.targets = list,
+        Err(e) => errors.push(e),
+    }
+    if !errors.is_empty() {
+        app.status = Some(errors.join(" · "));
+    }
     let mut terminal = ratatui::init();
     let me = Me {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
     };
-    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me);
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
     ratatui::restore();
     result
 }
@@ -181,6 +189,7 @@ fn event_loop(
     watch: &Receiver<WatchMsg>,
     sources: &Receiver<SourceUpdate>,
     me: &Me,
+    state: &Path,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let mut tab_label = String::new();
@@ -252,6 +261,32 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
+            Some(Action::SaveIdeas) => {
+                if let Err(e) = store::save(&state.join("ideas.json"), &app.ideas) {
+                    app.status = Some(format!("could not save ideas: {e}"));
+                }
+            }
+            Some(Action::SaveTargets) => {
+                if let Err(e) = store::save(&state.join("targets.json"), &app.targets) {
+                    app.status = Some(format!("could not save run targets: {e}"));
+                }
+            }
+            Some(Action::Run {
+                workspace_id,
+                steps,
+            }) => {
+                let sock = herdr::socket_path();
+                let send = |method: &str, params| herdr::client::request(&sock, method, params);
+                match run::execute(workspace_id.as_deref(), &steps, send) {
+                    Ok(Some(pane)) => {
+                        if let Err(e) = herdr::focus_pane(&sock, &pane) {
+                            app.status = Some(format!("could not focus {pane}: {e}"));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => app.status = Some(format!("run: {e}")),
+                }
+            }
             None => {}
         }
     }
@@ -301,6 +336,7 @@ pub(crate) fn render(w: u16, h: u16, draw: impl FnOnce(&mut ratatui::Frame)) -> 
 mod tests {
     use super::*;
     use crate::ui::app::{sample_app, Screen, Tab};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn draws_empty_model() {
@@ -324,6 +360,95 @@ mod tests {
         let mut app = sample_app();
         app.screen = Screen::Global(Tab::Threads);
         assert!(render(120, 30, |f| draw(f, &app)).contains("Parser fix"));
+    }
+
+    #[test]
+    fn draws_the_idea_form_over_the_view() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Ideas,
+        };
+        app.form = Some(crate::ui::app::Form {
+            title: " new idea · beta ".into(),
+            kind: crate::ui::app::FormKind::Idea {
+                editing: None,
+                project_key: app.model.projects[0].key.clone(),
+                project_name: "beta".into(),
+            },
+            fields: vec![
+                ("name", "Export".into()),
+                ("description", "usage to CSV".into()),
+            ],
+            focus: 1,
+            cursor: usize::MAX,
+            error: Some("an idea needs a name".into()),
+        });
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("new idea"));
+        assert!(out.contains("Export"));
+        assert!(out.contains("usage to CSV"));
+        assert!(out.contains("Enter save"));
+        assert!(out.contains("an idea needs a name"));
+    }
+
+    #[test]
+    fn draws_the_delete_popup_with_no_selected() {
+        let mut app = sample_app();
+        app.confirm = Some(crate::ui::app::Confirm {
+            what: crate::ui::app::Doomed::Idea(0),
+            name: "Cache".into(),
+            yes: false,
+        });
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("Delete \"Cache\"?"), "{out}");
+        assert!(out.contains("[ Yes ]"));
+        assert!(out.contains("[ No ]"));
+    }
+
+    #[test]
+    fn draws_the_run_picker_with_running_marks_and_layout_hint() {
+        let mut app = sample_app();
+        app.model
+            .pane_labels
+            .insert("alpha:api".into(), "w1:p7".into());
+        let alpha = app.model.projects[1].key.clone();
+        let target = |name: &str, command: &str| crate::run::Target {
+            project_key: alpha.clone(),
+            name: name.into(),
+            command: command.into(),
+            cwd: String::new(),
+            env: Default::default(),
+        };
+        app.targets = vec![target("api", "cargo run"), target("web", "pnpm dev")];
+        app.screen = Screen::Project {
+            key: alpha.clone(),
+            tab: Tab::Agents,
+        };
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("run · alpha"));
+        assert!(out.contains("[ ] api"));
+        assert!(out.contains("● running"));
+        assert!(out.contains("pnpm dev"));
+        assert!(out.contains("Space select"));
+        assert!(out.contains("n new · e edit · d delete"));
+        app.picker.as_mut().unwrap().choosing_layout = true;
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("s side by side"));
+    }
+
+    #[test]
+    fn draws_an_empty_picker_with_a_hint() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Agents,
+        };
+        app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("run · alpha"));
+        assert!(out.contains("no targets yet · n to add"));
     }
 
     #[test]

@@ -1,7 +1,8 @@
-//! The four list tabs, shared by the project drill-down and the global views.
+//! The five list tabs, shared by the project drill-down and the global views.
 
 use super::app::{App, Screen, Tab};
 use super::theme::{self, Palette};
+use crate::ideas::Status as IdeaStatus;
 use crate::model::{self, GroupBy, UsageRow};
 use ratatui::prelude::*;
 use ratatui::widgets::{
@@ -32,6 +33,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Tab::Threads => threads(f, body, app, pal),
         Tab::Timeline => timeline(f, body, app, pal),
         Tab::Usage => usage(f, body, app, pal),
+        Tab::Ideas => ideas(f, body, app, pal),
     }
     f.render_widget(Paragraph::new(footer_line(app, pal)), footer);
 }
@@ -75,9 +77,18 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
 }
 
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
-    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search · s state");
+    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search");
+    if app.tab().has_state() {
+        hint.push_str(" · s state");
+    }
     if app.tab() == Tab::Timeline {
         hint.push_str(" · w range");
+    }
+    if app.tab() == Tab::Ideas {
+        hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
+    }
+    if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
+        hint.push_str(" · x run");
     }
     if matches!(app.screen, Screen::Global(_)) {
         hint.push_str(" · f project");
@@ -90,9 +101,15 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
             Style::new().fg(pal.accent),
         ));
     }
-    if let Some(s) = app.state_filter {
+    if let Some(s) = app.state_filter.filter(|_| app.tab().has_state()) {
         spans.push(Span::styled(
             format!("   state: {}", theme::word(s)),
+            Style::new().fg(pal.warn),
+        ));
+    }
+    if let Some(s) = app.idea_filter.filter(|_| app.tab() == Tab::Ideas) {
+        spans.push(Span::styled(
+            format!("   status: {}", s.label()),
             Style::new().fg(pal.warn),
         ));
     }
@@ -376,6 +393,83 @@ fn timeline(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     f.render_stateful_widget(table, area, &mut table_state(app.selected_row));
 }
 
+fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
+    let rows = app.visible_ideas();
+    let folded = app.folded_done();
+    if rows.is_empty() {
+        let msg = if folded > 0 {
+            format!("all {folded} ideas here are done · c to show")
+        } else if let Some(s) = app.idea_filter {
+            format!("no {} ideas · s changes the filter", s.label())
+        } else if !app.search.is_empty() {
+            "no ideas match the search".into()
+        } else if app.scope().is_none() {
+            "no ideas yet · f picks a project, then a adds".into()
+        } else {
+            "no ideas yet · a to add".into()
+        };
+        return empty(f, area, &msg, pal);
+    }
+    let [list, fold, preview] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(u16::from(folded > 0)),
+        Constraint::Length(5),
+    ])
+    .areas(area);
+    f.render_widget(
+        Paragraph::new(format!("── ✓ {folded} done · c to show ──"))
+            .style(Style::new().fg(pal.dim)),
+        fold,
+    );
+    let global = matches!(app.screen, Screen::Global(_));
+    let body: Vec<Row> = rows
+        .iter()
+        .map(|(_, i)| {
+            let (color, name) = match i.status {
+                IdeaStatus::Todo => (pal.dim, Style::new().bold()),
+                IdeaStatus::Doing => (pal.warn, Style::new().bold()),
+                IdeaStatus::Done => (pal.ok, Style::new().fg(pal.dim)),
+            };
+            let mut cells = vec![
+                Cell::from(Span::styled(i.status.label(), Style::new().fg(color))),
+                Cell::from(Span::styled(i.name.clone(), name)),
+            ];
+            if global {
+                cells.push(Cell::from(Span::styled(
+                    i.project_name.clone(),
+                    Style::new().fg(pal.dim),
+                )));
+            }
+            cells.push(Cell::from(i.description.clone()));
+            Row::new(cells)
+        })
+        .collect();
+    let mut widths = vec![Constraint::Length(8), Constraint::Length(28)];
+    let mut header = vec!["status", "idea"];
+    if global {
+        widths.push(Constraint::Length(18));
+        header.push("project");
+    }
+    widths.push(Constraint::Min(10));
+    header.push("description");
+    let table = Table::new(body, widths)
+        .header(Row::new(header).style(Style::new().fg(pal.dim)))
+        .row_highlight_style(Style::new().bg(pal.highlight));
+    f.render_stateful_widget(table, list, &mut table_state(app.selected_row));
+    if let Some((_, i)) = rows.get(app.selected_row) {
+        f.render_widget(
+            Paragraph::new(i.description.clone())
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::new()
+                        .borders(Borders::TOP)
+                        .border_style(Style::new().fg(pal.dim)),
+                ),
+            preview,
+        );
+    }
+}
+
 fn usage(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let days = model::last_days(app.now, 14);
     let scope = app.scope();
@@ -538,6 +632,65 @@ mod tests {
         assert!(out.contains("claude-opus-5-5"));
         assert!(out.contains("2026-10-08"));
         assert!(out.contains("≈$4.00"));
+    }
+
+    #[test]
+    fn ideas_show_name_description_and_project_globally() {
+        let mut app = sample_app();
+        app.ideas = vec![crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Pricing cache".into(),
+            description: "keep prices for 24h".into(),
+            status: crate::ideas::Status::Doing,
+        }];
+        app.screen = Screen::Global(Tab::Ideas);
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("Pricing cache"));
+        assert!(out.contains("◐ doing"));
+        assert!(out.contains("alpha"));
+        assert!(out.contains("keep prices for 24h"));
+        assert!(out.contains("a add"));
+    }
+
+    #[test]
+    fn empty_ideas_say_why() {
+        let mut app = sample_app();
+        app.screen = Screen::Global(Tab::Ideas);
+        assert!(screen(&app, 120, 30).contains("no ideas yet · f picks a project, then a adds"));
+        app.ideas = vec![crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Next".into(),
+            description: String::new(),
+            status: crate::ideas::Status::Todo,
+        }];
+        app.idea_filter = Some(crate::ideas::Status::Doing);
+        assert!(screen(&app, 120, 30).contains("no ◐ doing ideas · s changes the filter"));
+    }
+
+    #[test]
+    fn done_ideas_fold_into_one_line() {
+        let mut app = sample_app();
+        let done = crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Shipped".into(),
+            description: String::new(),
+            status: crate::ideas::Status::Done,
+        };
+        app.ideas = vec![done.clone()];
+        app.screen = Screen::Global(Tab::Ideas);
+        assert!(screen(&app, 120, 30).contains("all 1 ideas here are done · c to show"));
+        app.ideas.push(crate::ideas::Idea {
+            name: "Next".into(),
+            status: crate::ideas::Status::Todo,
+            ..done
+        });
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("Next"));
+        assert!(!out.contains("Shipped"));
+        assert!(out.contains("── ✓ 1 done · c to show ──"));
     }
 
     #[test]

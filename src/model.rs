@@ -91,6 +91,8 @@ pub struct Model {
     pub totals: Counts,
     pub today: Usage,
     pub today_cost: Cost,
+    /// herdr pane label → pane id, for every labelled pane (run targets are found by label).
+    pub pane_labels: HashMap<String, String>,
 }
 
 fn entry<'a>(projects: &'a mut HashMap<String, Project>, p: &ProjectRef) -> &'a mut Project {
@@ -237,6 +239,9 @@ pub fn build(
         totals,
         today: today_row.as_ref().map(|r| r.usage).unwrap_or_default(),
         today_cost: today_row.map(|r| r.cost).unwrap_or_default(),
+        pane_labels: (snap.panes.iter())
+            .filter_map(|p| Some((p.label.clone()?, p.pane_id.clone())))
+            .collect(),
     }
 }
 
@@ -539,6 +544,22 @@ mod tests {
         assert_eq!(days.len(), 3);
         assert_eq!(days[2], crate::transcripts::claude::local_day(now));
         assert!(days[0] < days[1]);
+    }
+
+    #[test]
+    fn pane_labels_point_at_their_panes() {
+        let mut snap = snapshot();
+        snap.panes[2].label = Some("gamma:web".into());
+        let m = build(
+            &snap,
+            &[],
+            &[],
+            &Pricing::new(HashMap::new()),
+            &mut Resolver::default(),
+            "2026-10-08",
+        );
+        assert_eq!(m.pane_labels.len(), 1);
+        assert_eq!(m.pane_labels["gamma:web"], "w3:p1");
     }
 
     #[test]

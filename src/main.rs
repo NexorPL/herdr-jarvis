@@ -2,11 +2,14 @@ mod collector;
 mod config;
 mod events;
 mod herdr;
+mod ideas;
 mod log;
 mod model;
 mod paths;
 mod pricing;
 mod projects;
+mod run;
+mod store;
 mod transcripts;
 mod ui;
 
