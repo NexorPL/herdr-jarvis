@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::herdr::{self, WatchMsg};
 use crate::log::log;
 use crate::{events, paths};
+use serde_json::json;
 use std::fs::File;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -52,14 +53,58 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Starts a detached collector unless one already holds the lock.
+/// `jarvis ensure-collector`, run by herdr's `[[startup]]`: the collector, then the Jarvis tab.
 pub fn ensure_running() -> anyhow::Result<()> {
+    ensure_collector()?;
+    ensure_tui(&paths::state_dir())
+}
+
+/// Starts a detached collector unless one already holds the lock.
+pub fn ensure_collector() -> anyhow::Result<()> {
     let state = paths::state_dir();
     std::fs::create_dir_all(&state)?;
-    if is_running(&state.join("collector.lock")) {
+    if !is_running(&state.join("collector.lock")) {
+        spawn_detached(&["collect"])?;
+    }
+    Ok(())
+}
+
+/// herdr restores a session's layout but not plugin processes, so after a restart the "Jarvis" tab
+/// holds a plain shell. Unless a Jarvis is running, replace those leftovers with a live one, in the
+/// same workspace and without taking the focus.
+fn ensure_tui(state: &Path) -> anyhow::Result<()> {
+    if is_running(&state.join("tui.lock")) {
         return Ok(());
     }
-    spawn_detached(&["collect"])
+    let socket = herdr::socket_path();
+    let snap = herdr::client::snapshot(&socket)?;
+    let stale = stale_jarvis_panes(&snap);
+    for pane in &stale {
+        herdr::client::request(&socket, "pane.close", json!({"pane_id": pane.pane_id}))?;
+    }
+    let mut open = json!({"plugin_id": "jarvis", "entrypoint": "core", "focus": false});
+    if let Some(pane) = stale.first() {
+        open["workspace_id"] = json!(pane.workspace_id);
+    }
+    herdr::client::request(&socket, "plugin.pane.open", open)?;
+    // herdr activates the new tab shortly after the request returns, even with focus=false; give
+    // the focus back from a detached process once that has happened.
+    if let Some(focused) = snap
+        .focused_pane_id
+        .as_deref()
+        .filter(|f| stale.iter().all(|p| p.pane_id != *f))
+    {
+        spawn_detached(&["focus", focused])?;
+    }
+    Ok(())
+}
+
+/// Panes left over from an earlier Jarvis: herdr labels plugin panes with the manifest title.
+pub fn stale_jarvis_panes(snap: &herdr::Snapshot) -> Vec<&herdr::Pane> {
+    snap.panes
+        .iter()
+        .filter(|p| p.label.as_deref() == Some("Jarvis"))
+        .collect()
 }
 
 /// Holds an exclusive lock for the life of the returned file; `None` when another process holds it.
@@ -145,6 +190,25 @@ mod tests {
         drop(held);
         assert!(!is_running(&path));
         assert!(try_lock(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn restored_jarvis_panes_are_stale() {
+        let snap: herdr::Snapshot = serde_json::from_value(serde_json::json!({
+            "protocol": 22,
+            "panes": [
+                {"pane_id": "w8:pA", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Jarvis", "agent_status": "unknown"},
+                {"pane_id": "w8:pD", "workspace_id": "w8", "tab_id": "w8:t1", "label": "Sidebar", "agent_status": "unknown"},
+                {"pane_id": "w8:p1", "workspace_id": "w8", "tab_id": "w8:t1", "agent_status": "working"}
+            ]
+        }))
+        .unwrap();
+        let stale = stale_jarvis_panes(&snap);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(
+            (stale[0].pane_id.as_str(), stale[0].workspace_id.as_str()),
+            ("w8:pA", "w8")
+        );
     }
 
     #[test]

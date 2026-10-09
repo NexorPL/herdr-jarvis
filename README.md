@@ -73,7 +73,8 @@ Costs are estimates from public per-token prices, shown with `≈`.
 
 `jarvis collect` starts with herdr (detached, single instance) and records agent state changes to
 daily JSONL files in the plugin state directory, so the timeline covers time when the overlay was
-closed. The overlay reads herdr's socket API, an incremental index of Claude Code transcripts and those
+closed. herdr restores a session's layout but not plugin processes, so on startup Jarvis also replaces
+the restored, empty "Jarvis" tab with a live one (without taking the focus). Jarvis reads herdr's socket API, an incremental index of Claude Code transcripts and those
 files. Nothing leaves your machine.
 
 ## Development

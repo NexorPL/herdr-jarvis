@@ -132,7 +132,7 @@ fn claim_instance(state: &Path, my_pane: &str) -> std::io::Result<Result<File, S
 
 pub fn run() -> anyhow::Result<()> {
     let config = Config::load(&paths::config_dir());
-    if let Err(e) = collector::ensure_running() {
+    if let Err(e) = collector::ensure_collector() {
         log(format!("tui: could not start collector: {e}"));
     }
     let state = paths::state_dir();

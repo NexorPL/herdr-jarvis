@@ -321,6 +321,7 @@ pub mod testkit {
             agent: Some("claude".into()),
             agent_session: session.map(|s| AgentSession { value: s.into() }),
             terminal_title_stripped: Some(format!("title {id}")),
+            label: None,
             focused: false,
         }
     }
@@ -339,6 +340,7 @@ pub mod testkit {
         Snapshot {
             version: "0.9.3".into(),
             protocol: 22,
+            focused_pane_id: None,
             workspaces: vec![
                 Workspace {
                     workspace_id: "w1".into(),
