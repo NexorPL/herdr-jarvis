@@ -44,6 +44,12 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
         })
         .collect();
     lines.push(Line::raw(""));
+    if let Some(e) = &form.error {
+        lines.push(Line::from(Span::styled(
+            e.clone(),
+            Style::new().fg(pal.alert),
+        )));
+    }
     lines.push(Line::from(Span::styled(
         "Tab next field · Enter save · Esc cancel",
         Style::new().fg(pal.dim),

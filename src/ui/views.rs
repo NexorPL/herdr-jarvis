@@ -399,10 +399,14 @@ fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     if rows.is_empty() {
         let msg = if folded > 0 {
             format!("all {folded} ideas here are done · c to show")
-        } else if app.search.is_empty() {
-            "no ideas yet · a to add".into()
-        } else {
+        } else if let Some(s) = app.idea_filter {
+            format!("no {} ideas · s changes the filter", s.label())
+        } else if !app.search.is_empty() {
             "no ideas match the search".into()
+        } else if app.scope().is_none() {
+            "no ideas yet · f picks a project, then a adds".into()
+        } else {
+            "no ideas yet · a to add".into()
         };
         return empty(f, area, &msg, pal);
     }
@@ -647,6 +651,22 @@ mod tests {
         assert!(out.contains("alpha"));
         assert!(out.contains("keep prices for 24h"));
         assert!(out.contains("a add"));
+    }
+
+    #[test]
+    fn empty_ideas_say_why() {
+        let mut app = sample_app();
+        app.screen = Screen::Global(Tab::Ideas);
+        assert!(screen(&app, 120, 30).contains("no ideas yet · f picks a project, then a adds"));
+        app.ideas = vec![crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Next".into(),
+            description: String::new(),
+            status: crate::ideas::Status::Todo,
+        }];
+        app.idea_filter = Some(crate::ideas::Status::Doing);
+        assert!(screen(&app, 120, 30).contains("no ◐ doing ideas · s changes the filter"));
     }
 
     #[test]

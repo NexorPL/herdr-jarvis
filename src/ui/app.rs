@@ -131,6 +131,8 @@ pub struct Form {
     pub kind: FormKind,
     pub fields: Vec<(&'static str, String)>,
     pub focus: usize,
+    /// Why Enter was refused, shown in the form.
+    pub error: Option<String>,
 }
 
 /// What the delete popup removes, by index into its list.
@@ -656,6 +658,10 @@ impl App {
                 if let Some(i) = (self.visible_ideas().get(self.selected_row)).map(|(i, _)| *i) {
                     self.ideas[i].status = self.ideas[i].status.next();
                     self.action = Some(Action::SaveIdeas);
+                    // The list is sorted by status: follow the idea, or stay put if it was folded away.
+                    if let Some(row) = self.visible_ideas().iter().position(|(j, _)| *j == i) {
+                        self.selected_row = row;
+                    }
                     self.clamp();
                 }
             }
@@ -874,6 +880,7 @@ impl App {
             },
             fields: vec![("name", t.name), ("command", t.command), ("cwd", t.cwd)],
             focus: 0,
+            error: None,
         });
     }
 
@@ -936,6 +943,7 @@ impl App {
             },
             fields: vec![("name", String::new()), ("description", String::new())],
             focus: 0,
+            error: None,
         });
     }
 
@@ -952,16 +960,14 @@ impl App {
                 },
                 fields: vec![("name", idea.name), ("description", idea.description)],
                 focus: 0,
+                error: None,
             });
         }
     }
 
     fn on_form_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.form = None;
-                self.status = None;
-            }
+            KeyCode::Esc => self.form = None,
             KeyCode::Enter => self.submit_form(),
             code => {
                 let Some(form) = self.form.as_mut() else {
@@ -982,7 +988,7 @@ impl App {
     }
 
     fn submit_form(&mut self) {
-        let Some(form) = self.form.take() else {
+        let Some(mut form) = self.form.take() else {
             return;
         };
         let v: Vec<String> = (form.fields.iter())
@@ -993,11 +999,10 @@ impl App {
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
         };
         if v[..required].iter().any(String::is_empty) {
-            self.status = Some(refusal.into());
+            form.error = Some(refusal.into());
             self.form = Some(form);
             return;
         }
-        self.status = None;
         match form.kind {
             FormKind::Idea {
                 editing,
@@ -1330,6 +1335,25 @@ mod tests {
     }
 
     #[test]
+    fn space_keeps_the_cursor_on_the_idea_it_changed() {
+        let mut app = sample_app();
+        app.ideas = vec![idea(&app, 0, "A"), idea(&app, 0, "B")];
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ideas[1].status, IdeaStatus::Doing);
+        assert_eq!(app.visible_ideas()[app.selected_row].1.name, "B");
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ideas[1].status, IdeaStatus::Done);
+        assert_eq!(app.ideas[0].status, IdeaStatus::Todo);
+        assert_eq!(
+            app.visible_ideas()[app.selected_row].1.name,
+            "A",
+            "B folded away"
+        );
+    }
+
+    #[test]
     fn ideas_list_doing_then_todo_and_fold_done_until_c() {
         let mut app = sample_app();
         app.ideas = vec![
@@ -1474,11 +1498,18 @@ mod tests {
         key(&mut app, KeyCode::Char('a'));
         chars(&mut app, "  ");
         key(&mut app, KeyCode::Enter);
-        assert!(app.form.is_some());
-        assert_eq!(app.status.as_deref(), Some("an idea needs a name"));
+        assert_eq!(
+            app.form.as_ref().unwrap().error.as_deref(),
+            Some("an idea needs a name")
+        );
+        app.status = Some("ideas.json unreadable".into());
         key(&mut app, KeyCode::Esc);
         assert!(app.form.is_none());
-        assert_eq!(app.status, None);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("ideas.json unreadable"),
+            "a form never hides an unrelated message"
+        );
         assert!(app.ideas.is_empty());
         assert!(matches!(app.screen, Screen::Project { .. }));
     }
@@ -1558,16 +1589,17 @@ mod tests {
         };
     }
 
-    /// Opens alpha's picker with alpha's two targets and one of beta's.
+    /// Opens alpha's picker with one of beta's targets stored first, then alpha's two, so picker rows
+    /// and storage indices differ.
     fn alpha_picker(app: &mut App) -> RunContext {
-        app.targets = run_targets(app);
-        app.targets.push(Target {
+        app.targets = vec![Target {
             project_key: app.model.projects[0].key.clone(),
             name: "beta-api".into(),
             command: "make".into(),
             cwd: String::new(),
             env: Default::default(),
-        });
+        }];
+        app.targets.extend(run_targets(app));
         alpha_agents(app);
         key(app, KeyCode::Char('x'));
         app.picker.as_ref().expect("x opens the picker").ctx.clone()
@@ -1715,9 +1747,8 @@ mod tests {
         key(&mut app, KeyCode::Char('n'));
         chars(&mut app, "api");
         key(&mut app, KeyCode::Enter);
-        assert!(app.form.is_some());
         assert_eq!(
-            app.status.as_deref(),
+            app.form.as_ref().unwrap().error.as_deref(),
             Some("a target needs a name and a command")
         );
         key(&mut app, KeyCode::Esc);
@@ -1737,7 +1768,33 @@ mod tests {
         key(&mut app, KeyCode::Char('y'));
         assert_eq!(names(&app), ["web"]);
         assert_eq!(app.picker.as_ref().unwrap().chosen, [true]);
-        assert_eq!(app.targets.len(), 2, "beta's target stays");
+        let stored: Vec<&str> = app.targets.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(stored, ["beta-api", "web"], "beta's target stays");
+    }
+
+    #[test]
+    fn picker_edits_and_deletes_by_storage_index() {
+        let mut app = sample_app();
+        alpha_picker(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char('e'));
+        chars(&mut app, "2");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.targets[2].name, "web2");
+        assert_eq!(app.targets[0].name, "beta-api");
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.confirm.as_ref().unwrap().what, Doomed::Target(2));
+    }
+
+    #[test]
+    fn x_on_a_global_agent_row_opens_that_agents_project() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char('x'));
+        let ctx = &app.picker.as_ref().expect("x opens the picker").ctx;
+        assert_eq!(ctx.project, "alpha");
+        assert_eq!(ctx.workspace_id.as_deref(), Some("w1"));
     }
 
     #[test]

@@ -154,13 +154,17 @@ pub fn run() -> anyhow::Result<()> {
         state.join("collector.lock"),
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
+    let mut errors = Vec::new();
     match store::load(&state.join("ideas.json")) {
         Ok(list) => app.ideas = list,
-        Err(e) => app.status = Some(e),
+        Err(e) => errors.push(e),
     }
     match store::load(&state.join("targets.json")) {
         Ok(list) => app.targets = list,
-        Err(e) => app.status = Some(e),
+        Err(e) => errors.push(e),
+    }
+    if !errors.is_empty() {
+        app.status = Some(errors.join(" · "));
     }
     let mut terminal = ratatui::init();
     let me = Me {
@@ -376,12 +380,14 @@ mod tests {
                 ("description", "usage to CSV".into()),
             ],
             focus: 1,
+            error: Some("an idea needs a name".into()),
         });
         let out = render(100, 30, |f| draw(f, &app));
         assert!(out.contains("new idea"));
         assert!(out.contains("Export"));
         assert!(out.contains("usage to CSV"));
         assert!(out.contains("Enter save"));
+        assert!(out.contains("an idea needs a name"));
     }
 
     #[test]
