@@ -5,20 +5,29 @@ use std::path::Path;
 
 /// A missing file is an empty list. An unreadable one is copied to `<file>.bad`, so the next save cannot lose it.
 pub fn load<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+        Err(e) => return Err(back_up(path, e)),
     };
-    serde_json::from_str(&text).map_err(|e| {
-        let bad = path.with_extension("json.bad");
-        let _ = std::fs::copy(path, &bad);
-        format!(
+    let text = std::str::from_utf8(&bytes).map_err(|e| back_up(path, e))?;
+    // Notepad's "UTF-8 with BOM".
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| back_up(path, e))
+}
+
+fn back_up(path: &Path, e: impl std::fmt::Display) -> String {
+    let bad = path.with_extension("json.bad");
+    match std::fs::copy(path, &bad) {
+        Ok(_) => format!(
             "{} unreadable ({e}); kept a copy in {}",
             path.display(),
             bad.display()
-        )
-    })
+        ),
+        Err(c) => format!(
+            "{} unreadable ({e}); could not back it up ({c})",
+            path.display()
+        ),
+    }
 }
 
 /// Rewrites the whole file through a temporary one, so a crash never leaves half a file.
@@ -79,6 +88,27 @@ mod tests {
             load::<Idea>(&path).unwrap()[0].status,
             crate::ideas::Status::Todo
         );
+    }
+
+    #[test]
+    fn file_that_is_not_utf8_is_backed_up_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("targets.json");
+        fs::write(&path, b"[\xff\xfe]").unwrap();
+        let err = load::<Target>(&path).unwrap_err();
+        assert!(err.contains("targets.json.bad"), "{err}");
+        assert_eq!(
+            fs::read(path.with_extension("json.bad")).unwrap(),
+            b"[\xff\xfe]"
+        );
+    }
+
+    #[test]
+    fn utf8_bom_is_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ideas.json");
+        fs::write(&path, "\u{feff}[]").unwrap();
+        assert_eq!(load::<Idea>(&path).unwrap(), vec![]);
     }
 
     #[test]
