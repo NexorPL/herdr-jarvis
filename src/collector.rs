@@ -154,6 +154,7 @@ pub fn spawn_detached(args: &[&str]) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        keep_stdio_private();
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
@@ -173,6 +174,27 @@ pub fn spawn_detached(args: &[&str]) -> anyhow::Result<()> {
         command().process_group(0).spawn()?;
     }
     Ok(())
+}
+
+/// Windows children inherit every inheritable handle, null stdio or not. When our stdout is the
+/// pipe of herdr's startup hook, a collector holding it keeps herdr waiting for EOF, so the hook
+/// shows as running for the collector's whole life.
+#[cfg(windows)]
+fn keep_stdio_private() {
+    use std::os::windows::io::AsRawHandle;
+    unsafe extern "system" {
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    let stdio = [
+        std::io::stdin().as_raw_handle(),
+        std::io::stdout().as_raw_handle(),
+        std::io::stderr().as_raw_handle(),
+    ];
+    for h in stdio {
+        // Fails harmlessly for a missing handle.
+        unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) };
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +231,25 @@ mod tests {
             (stale[0].pane_id.as_str(), stale[0].workspace_id.as_str()),
             ("w8:pA", "w8")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn own_stdio_is_not_inherited() {
+        use std::os::windows::io::AsRawHandle;
+        unsafe extern "system" {
+            fn GetHandleInformation(handle: *mut std::ffi::c_void, flags: *mut u32) -> i32;
+        }
+        keep_stdio_private();
+        for h in [
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            let mut flags = 0;
+            if unsafe { GetHandleInformation(h, &mut flags) } != 0 {
+                assert_eq!(flags & 1, 0, "HANDLE_FLAG_INHERIT still set");
+            }
+        }
     }
 
     #[test]
