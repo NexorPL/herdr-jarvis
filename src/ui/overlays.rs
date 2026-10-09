@@ -1,13 +1,24 @@
-//! Popups drawn over the current screen: forms, the delete popup and the run picker.
+//! Popups drawn over the current screen: forms, the delete popup, the run picker and the answer popup.
 
-use super::app::{App, Confirm, Form, Picker};
+use super::app::{Answer, App, Confirm, Form, FormKind, Picker};
 use super::theme::Palette;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 /// A bordered box centered in `area`, sized to its lines.
 pub fn popup(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, pal: &Palette) {
-    let w = 84.min(area.width);
+    popup_wide(f, area, 84, title, lines, pal)
+}
+
+fn popup_wide(
+    f: &mut Frame,
+    area: Rect,
+    width: u16,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    pal: &Palette,
+) {
+    let w = width.min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);
     let rect = Rect::new(
         area.x + (area.width - w) / 2,
@@ -62,10 +73,11 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
             Style::new().fg(pal.alert),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        "Tab next field · Enter save · Esc cancel",
-        Style::new().fg(pal.dim),
-    )));
+    let hint = match form.kind {
+        FormKind::Prompt { .. } => "Enter send · Esc cancel",
+        _ => "Tab next field · Enter save · Esc cancel",
+    };
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
     popup(f, area, &form.title, lines, pal);
 }
 
@@ -127,4 +139,37 @@ pub fn confirm(f: &mut Frame, area: Rect, app: &App, c: &Confirm) {
         .centered(),
     ];
     popup(f, area, " delete ", lines, pal);
+}
+
+/// The blocked agent's screen, bottom lines first to go when it does not fit, with its live state.
+pub fn answer(f: &mut Frame, area: Rect, app: &App, a: &Answer) {
+    let pal = &app.palette;
+    let screen: Vec<&str> = a.screen.trim_end().lines().collect();
+    let room = (area.height as usize).saturating_sub(5);
+    let mut lines: Vec<Line<'static>> = screen[screen.len().saturating_sub(room)..]
+        .iter()
+        .map(|l| Line::raw(l.to_string()))
+        .collect();
+    if screen.is_empty() {
+        lines.push(Line::styled("reading the agent…", Style::new().fg(pal.dim)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "keys go to the agent: 1-9 ↑↓ Enter Tab, typing · Esc close",
+        Style::new().fg(pal.accent),
+    ));
+    let state = (app.model.projects.iter().flat_map(|p| &p.agents))
+        .find(|r| r.pane.pane_id == a.pane_id)
+        .map_or("gone".into(), |r| {
+            format!("{:?}", r.pane.agent_status).to_lowercase()
+        });
+    let width = area.width.saturating_sub(4);
+    popup_wide(
+        f,
+        area,
+        width,
+        &format!(" answer · {} · {state} ", a.agent),
+        lines,
+        pal,
+    );
 }

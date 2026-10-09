@@ -1,5 +1,6 @@
 mod collector;
 mod config;
+mod demo;
 mod events;
 mod herdr;
 mod ideas;
@@ -18,6 +19,7 @@ fn main() -> anyhow::Result<()> {
     let cmd = args.next();
     match cmd.as_deref().unwrap_or("tui") {
         "tui" => ui::run(),
+        "demo" => ui::demo(),
         "collect" => collector::run(),
         "ensure-collector" => collector::ensure_running(),
         "focus" => {
@@ -32,7 +34,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         other => anyhow::bail!(
-            "unknown command `{other}`; expected tui | collect | ensure-collector | focus <pane>"
+            "unknown command `{other}`; expected tui | demo | collect | ensure-collector | focus <pane>"
         ),
     }
 }

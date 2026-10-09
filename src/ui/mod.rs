@@ -13,8 +13,8 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, model, paths, run, store};
-use app::{Action, App, Screen, BOOT_TICKS};
+use crate::{collector, demo, model, paths, run, store};
+use app::{Action, App, Input, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
@@ -49,6 +49,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(c) = &app.confirm {
         overlays::confirm(f, body, app, c);
     }
+    if let Some(a) = &app.answer {
+        overlays::answer(f, body, app, a);
+    }
     if app.show_help {
         centered(
             f,
@@ -58,6 +61,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
                 "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
+                "        p prompt the selected agent, or answer it when blocked (Agents view)",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
@@ -171,7 +175,36 @@ pub fn run() -> anyhow::Result<()> {
     let me = Me {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
+        demo: false,
     };
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
+    ratatui::restore();
+    result
+}
+
+/// The TUI on `demo` data, for screenshots: no herdr, no collector, state in a temp dir.
+pub fn demo() -> anyhow::Result<()> {
+    let config = Config::default();
+    let state = std::env::temp_dir().join("jarvis-demo");
+    std::fs::create_dir_all(&state)?;
+    let now = chrono::Utc::now();
+    let (snap_tx, watch) = mpsc::channel();
+    snap_tx.send(WatchMsg::Snapshot(demo::snapshot()))?;
+    let (source_tx, sources) = mpsc::channel();
+    source_tx.send(SourceUpdate {
+        threads: demo::threads(now),
+        records: demo::records(now),
+        collector_running: true,
+    })?;
+    let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
+    app.ideas = demo::ideas();
+    app.targets = demo::targets();
+    let me = Me {
+        pane: String::new(),
+        tab: String::new(),
+        demo: true,
+    };
+    let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
     ratatui::restore();
     result
@@ -181,6 +214,8 @@ pub fn run() -> anyhow::Result<()> {
 struct Me {
     pane: String,
     tab: String,
+    /// `jarvis demo`: actions that would reach herdr are dropped.
+    demo: bool,
 }
 
 fn event_loop(
@@ -197,7 +232,20 @@ fn event_loop(
     let mut update = SourceUpdate::default();
     let mut resolver = Resolver::default();
     let mut dirty = true;
+    let mut screen_read = Instant::now();
     while !app.quit {
+        // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
+        if let Some(a) = app.answer.as_mut() {
+            if a.screen.is_empty() || screen_read.elapsed() >= Duration::from_millis(500) {
+                a.screen = if me.demo {
+                    demo::question().into()
+                } else {
+                    read_screen(&a.pane_id)
+                        .unwrap_or_else(|e| format!("could not read the agent: {e}"))
+                };
+                screen_read = Instant::now();
+            }
+        }
         for msg in watch.try_iter() {
             match msg {
                 WatchMsg::Snapshot(s) => {
@@ -253,6 +301,20 @@ fn event_loop(
                 }
             }
         }
+        if me.demo
+            && matches!(
+                app.action,
+                Some(
+                    Action::FocusPane(_)
+                        | Action::Prompt { .. }
+                        | Action::Input { .. }
+                        | Action::Run { .. }
+                )
+            )
+        {
+            app.action = None;
+            app.status = Some("demo: nothing is sent to herdr".into());
+        }
         match app.action.take() {
             // Jarvis stays open in its own tab; the agent's pane takes the focus.
             Some(Action::FocusPane(id)) => {
@@ -261,6 +323,40 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
+            Some(Action::Input { pane_id, input }) => {
+                let sock = herdr::socket_path();
+                let sent = match input {
+                    Input::Key(k) => herdr::client::request(
+                        &sock,
+                        "agent.send_keys",
+                        serde_json::json!({"target": pane_id, "keys": [k]}),
+                    ),
+                    Input::Text(t) => herdr::client::request(
+                        &sock,
+                        "pane.send_text",
+                        serde_json::json!({"pane_id": pane_id, "text": t}),
+                    ),
+                };
+                if let Err(e) = sent {
+                    app.status = Some(format!("could not type into the agent: {e}"));
+                }
+                // Show the agent's reaction on the next pass.
+                screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                    .unwrap_or_else(Instant::now);
+            }
+            Some(Action::Prompt {
+                pane_id,
+                agent,
+                text,
+            }) => {
+                let params = serde_json::json!({"target": pane_id, "text": text});
+                app.status = Some(
+                    match herdr::client::request(&herdr::socket_path(), "agent.prompt", params) {
+                        Ok(_) => format!("sent to {agent}"),
+                        Err(e) => format!("could not prompt {agent}: {e}"),
+                    },
+                );
+            }
             Some(Action::SaveIdeas) => {
                 if let Err(e) = store::save(&state.join("ideas.json"), &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));
@@ -291,6 +387,16 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+/// The visible terminal text of the agent in `pane_id`.
+fn read_screen(pane_id: &str) -> anyhow::Result<String> {
+    let params = serde_json::json!({"target": pane_id, "source": "visible"});
+    let result = herdr::client::request(&herdr::socket_path(), "agent.read", params)?;
+    Ok(result["read"]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string())
 }
 
 /// OSC 52 clipboard write; terminals without support ignore it and the status bar still shows the text.

@@ -14,6 +14,8 @@ open while you work. Its animated core: every project with herdr activity branch
 which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
 event timeline and token cost.
 
+![Jarvis: the core, a project's agents and a prompt sent from Jarvis](docs/images/jarvis.gif)
+
 Linux, macOS and Windows. herdr 0.9.0+.
 
 ## Install
@@ -25,8 +27,18 @@ herdr plugin install NexorPL/herdr-jarvis
 The install step downloads a prebuilt, SHA-256-verified binary for your platform and falls back to
 `cargo build --release` (Rust from https://rustup.rs) when none matches.
 
-Open it with the `Open Jarvis` action, or bind a key in herdr's `config.toml`. If Jarvis is already open,
-the same key jumps to its tab instead of starting a second one:
+## Run
+
+From any shell inside herdr:
+
+```bash
+herdr plugin action invoke jarvis.open
+```
+
+Jarvis opens in its own tab and stays open; `q` closes it. herdr does not list plugin actions in its
+menus, so for everyday use bind a key in herdr's `config.toml` and reload it (global menu →
+`reload config`). If Jarvis is already open, the same key jumps to its tab instead of starting a second
+one:
 
 ```toml
 [[keys.command]]
@@ -36,6 +48,8 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 ```
 
 ## What you see
+
+![The core with seven projects, the most urgent at the top](docs/images/core.png)
 
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
@@ -58,6 +72,7 @@ timeline, without threads or cost.
 |---|---|
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
+| Agents | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
@@ -121,6 +136,10 @@ cargo build --release
 herdr plugin link "$(pwd)"
 herdr plugin action invoke jarvis.open
 ```
+
+`jarvis demo` (`cargo run -- demo`) runs the UI on made-up projects without herdr, for screenshots and
+recordings (the images in this README come from it); nothing it does reaches herdr or your state
+directory.
 
 On Windows the running collector keeps `target/release/jarvis.exe` locked. `scripts/fetch-or-build.ps1`
 moves it aside before building; with plain `cargo build`, rename or stop it first
