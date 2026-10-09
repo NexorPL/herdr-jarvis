@@ -10,8 +10,9 @@ Two additions to the Jarvis TUI, shipped on one branch:
 
 - **Ideas (#2):** a list of ideas per project, each a name and a description, shown in a new Ideas tab per
   project and globally. Stored locally in the plugin state directory.
-- **Run targets (#8):** a project declares its processes in `.jarvis/run.toml`; from Jarvis you pick some or
-  all of them and start them in herdr panes, one tab each or side by side in one tab.
+- **Run targets (#8):** you define a project's processes from Jarvis (stored privately in the plugin state
+  directory); you pick some or all of them and start them in herdr panes, one tab each or side by side in
+  one tab.
 
 Out of scope: showing GitHub issues next to ideas, turning an idea into an issue, restarting running targets.
 
@@ -44,35 +45,47 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
 - Keys on the Ideas tab:
   - `a` add. On the global view this needs a project filter (`f`), otherwise the status line says so.
   - `e` or `Enter` edit the selected idea.
-  - `d` delete: the status line asks `delete "<name>"? y/n`; any key other than `y` cancels.
-- Form: an overlay with two single-line fields, Name and Description. `Tab` switches field, typing edits the
-  focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a status message), `Esc`
-  cancels. While the form is open it takes every key.
+  - `d` delete, through the delete popup (below).
+- Form: an overlay with two single-line fields, Name and Description. `Tab`/`BackTab` move between fields,
+  typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a status
+  message), `Esc` cancels. While the form is open it takes every key. Ideas and run targets share this form.
+- Delete popup: a centered `Delete "<name>"?` with `[ Yes ]` and `[ No ]`, **No** selected.
+  `Left`/`Right`/`Tab`/`h`/`l` switch the button, `Enter` confirms the selected one, `y` deletes, `n` or
+  `Esc` cancels. While open it takes every key. Ideas and run targets share it.
 
 ## 3. Run targets (#8)
 
 ### Definition
 
-`<root>/.jarvis/run.toml`, versioned with the project:
+Targets are private to the user, not versioned with the project. They live in `<state_dir>/targets.json`,
+a JSON array:
 
-```toml
-[[target]]
-name = "backend"
-cwd = "services/api"      # relative to <root>; default "."
-command = "npm run dev"
-env = { PORT = "3001" }   # optional
+```json
+[{ "project_key": "c:/projects/home/herdr-jarvis", "name": "backend", "command": "npm run dev",
+   "cwd": "services/api", "env": { "PORT": "3001" } }]
 ```
 
+- `project_key` is the same normalized project root as for ideas; the picker shows the targets of its project.
+- `cwd` is relative to `<root>`; empty means `<root>` itself.
+- `env` is optional (missing means none) and is edited by hand in the file only.
+- Loaded at TUI start and saved on every change exactly like `ideas.json`: atomic write through
+  `targets.json.tmp`, an unreadable file copied to `targets.json.bad` and reported in the status line.
+
 `<root>` is the worktree of the selected agent when it works in a linked worktree, otherwise the project
-root. Unknown keys are ignored; a missing `name` or `command` is a parse error naming the target.
+root.
 
 ### Picker
 
 - `x` opens the picker for:
   - the project screen's project, using the selected agent's worktree when the Agents tab has a selected row;
   - the selected agent's project on the global Agents view.
+- `x` always opens the picker, also when the project has no targets yet; an empty picker shows
+  `no targets yet · n to add`.
 - The picker lists the targets with `[ ]`/`[x]` and `● running` for targets already running. `Space` toggles
-  the selected target, `a` selects all or none, `j`/`k`/arrows move, `Esc` closes.
+  the selected target, `a` selects all or none, `j`/`k`/arrows move, `Esc` closes. The footer lists the keys.
+- `n` adds a target, `e` edits the one under the cursor, `d` deletes it through the delete popup. The form
+  has the fields name, command and cwd; name and command are required (a status message says so), cwd is
+  optional. `Enter` saves and returns to the picker, `Esc` cancels.
 - `Enter` with one target selected starts it in its own tab. With more selected it asks for the layout:
   `t` one tab per target, `s` one tab with the targets side by side, `Esc` back to the picker.
 - `Enter` with nothing selected does nothing.
@@ -97,16 +110,18 @@ Starting the rest is a list of socket requests built by a pure function, then se
 
 ### Errors
 
-A missing `run.toml`, a parse error, or a failed herdr request is shown in the status line; already created
-panes stay. Nothing crashes the TUI.
+An unreadable `targets.json` or a failed herdr request is shown in the status line; already created panes
+stay. Nothing crashes the TUI.
 
 ## 4. Testing
 
-- Ideas: load/save round trip, missing file, unreadable file is backed up to `ideas.json.bad`.
-- `run.toml` parser: defaults, env, missing fields.
-- `App` key handling: Ideas tab add/edit/delete flow, global add needs a filter, picker toggling, select all,
-  layout choice, running targets skipped.
+- JSON store (shared by ideas and targets): load/save round trip, missing file, unreadable file is backed up
+  to `<file>.bad`, a target without `env`.
+- `App` key handling: Ideas tab add/edit/delete flow, global add needs a filter, the delete popup (default
+  No, `y`, `Enter` on Yes, `Esc`), an empty picker on `x`, targets filtered by project, adding, editing and
+  deleting targets from the picker, picker toggling, select all, layout choice, running targets skipped.
+- Drawing: the form, the delete popup, the picker and the empty picker.
 - Request plan: the pure function's output for both layouts and for partially running targets, checked
   against expected JSON without a running herdr.
-- Manual: start targets from a real `run.toml` in herdr on Windows, both layouts, and re-press `x` to see
+- Manual: add targets from the picker and start them in herdr on Windows, both layouts, and re-press `x` to see
   them marked running.

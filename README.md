@@ -36,7 +36,8 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
 - **Ideas**: a fifth tab with a list of ideas per project (name and description), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
-- **Run targets**: `x` starts a project's processes declared in `.jarvis/run.toml` (see below).
+- **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
+  (see below).
 
 Projects are grouped by git repository; linked worktrees sit under their main repository. Threads and
 usage come from Claude Code transcripts (`~/.claude/projects`); other agents appear in the tree and the
@@ -49,26 +50,25 @@ timeline, without threads or cost.
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
-| Ideas tab | `a` add · `e` / `Enter` edit · `d` delete (`y` confirms) · in the form `Tab` switches field, `Enter` saves, `Esc` cancels |
-| Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side |
+| Ideas tab | `a` add · `e` / `Enter` edit · `d` delete |
+| Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
+| Forms | `Tab` / `Shift+Tab` switch field · `Enter` save · `Esc` cancel |
+| Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
 ## Run targets
 
-Declare a project's processes in `.jarvis/run.toml` at the project root (or the worktree root), versioned
-with the project:
+Run targets are private: you define them in Jarvis, not in the project. Press `x` on a project screen or an
+agent row, then `n` to add a target with a name, a command and an optional working directory (relative to
+the project root, or the agent's worktree when it works in one; empty means the root). `e` edits and `d`
+deletes the target under the cursor.
 
-```toml
-[[target]]
-name = "backend"
-cwd = "services/api"        # relative to the project root; default "."
-command = "npm run dev"
-env = { PORT = "3001" }     # optional
+Targets are stored in `targets.json` in the plugin state directory. An environment for a target can be
+added there by hand:
 
-[[target]]
-name = "web-admin"
-cwd = "apps/admin"
-command = "pnpm dev"
+```json
+[{ "project_key": "/home/me/shop", "name": "backend", "command": "npm run dev",
+   "cwd": "services/api", "env": { "PORT": "3001" } }]
 ```
 
 Each target starts in a new pane running your shell, labelled `<project>:<target>`, so it stays open
