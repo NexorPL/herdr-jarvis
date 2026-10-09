@@ -58,6 +58,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
                 "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
+                "        p prompt the selected agent (Agents view)",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
@@ -261,6 +262,19 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
+            Some(Action::Prompt {
+                pane_id,
+                agent,
+                text,
+            }) => {
+                let params = serde_json::json!({"target": pane_id, "text": text});
+                app.status = Some(
+                    match herdr::client::request(&herdr::socket_path(), "agent.prompt", params) {
+                        Ok(_) => format!("sent to {agent}"),
+                        Err(e) => format!("could not prompt {agent}: {e}"),
+                    },
+                );
+            }
             Some(Action::SaveIdeas) => {
                 if let Err(e) = store::save(&state.join("ideas.json"), &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));

@@ -104,6 +104,12 @@ pub enum Action {
     SaveIdeas,
     /// `targets` changed; write them to disk.
     SaveTargets,
+    /// Submit `text` to the agent in `pane_id`; `agent` names it in the status bar.
+    Prompt {
+        pane_id: String,
+        agent: String,
+        text: String,
+    },
     /// Send these steps to herdr, then focus the first new pane.
     Run {
         workspace_id: Option<String>,
@@ -122,6 +128,10 @@ pub enum FormKind {
     Target {
         editing: Option<usize>,
         project_key: String,
+    },
+    Prompt {
+        pane_id: String,
+        agent: String,
     },
 }
 
@@ -692,6 +702,7 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('p') if self.tab() == Tab::Agents => self.prompt_form(),
             KeyCode::Char('x') => match self.run_context() {
                 Some(ctx) => {
                     let n = (self.targets.iter())
@@ -742,6 +753,31 @@ impl App {
             Tab::Ideas => self.edit_idea(),
             Tab::Timeline | Tab::Usage => {}
         }
+    }
+
+    /// The prompt form for the selected agent. herdr refuses prompts to an agent waiting on a question.
+    fn prompt_form(&mut self) {
+        let Some((p, a)) = self.visible_agents().get(self.selected_row).copied() else {
+            return;
+        };
+        let agent = format!("{}/{}", p.name, a.pane.title());
+        if a.pane.agent_status == AgentStatus::Blocked {
+            self.status = Some(format!(
+                "{agent} is waiting on a question: Enter jumps to it"
+            ));
+            return;
+        }
+        self.form = Some(Form {
+            title: format!(" prompt · {agent} "),
+            kind: FormKind::Prompt {
+                pane_id: a.pane.pane_id.clone(),
+                agent,
+            },
+            fields: vec![("prompt", String::new())],
+            focus: 0,
+            cursor: usize::MAX,
+            error: None,
+        });
     }
 
     /// Pane of a target that is already running, found by its herdr label.
@@ -1006,6 +1042,7 @@ impl App {
         let (required, refusal) = match form.kind {
             FormKind::Idea { .. } => (1, "an idea needs a name"),
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
+            FormKind::Prompt { .. } => (1, "type a prompt"),
         };
         if v[..required].iter().any(String::is_empty) {
             form.error = Some(refusal.into());
@@ -1053,6 +1090,13 @@ impl App {
                 let t = &mut self.targets[i];
                 (t.name, t.command, t.cwd) = (v[0].clone(), v[1].clone(), v[2].clone());
                 self.action = Some(Action::SaveTargets);
+            }
+            FormKind::Prompt { pane_id, agent } => {
+                self.action = Some(Action::Prompt {
+                    pane_id,
+                    agent,
+                    text: v[0].clone(),
+                });
             }
         }
     }
@@ -1284,6 +1328,49 @@ mod tests {
         app.fatal = Some("protocol".into());
         key(&mut app, KeyCode::Char('x'));
         assert!(app.quit);
+    }
+
+    #[test]
+    fn p_prompts_the_selected_agent_unless_blocked() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        let row = |app: &App, s| {
+            (app.visible_agents().iter())
+                .position(|(_, a)| (a.pane.agent_status == AgentStatus::Blocked) == s)
+                .unwrap()
+        };
+        app.selected_row = row(&app, true);
+        key(&mut app, KeyCode::Char('p'));
+        assert!(app.form.is_none());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("waiting on a question"));
+
+        app.selected_row = row(&app, false);
+        let pane_id = app.visible_agents()[app.selected_row]
+            .1
+            .pane
+            .pane_id
+            .clone();
+        key(&mut app, KeyCode::Char('p'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.form.as_ref().unwrap().error.as_deref(),
+            Some("type a prompt")
+        );
+        chars(&mut app, "run the tests");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.is_none());
+        match app.action.take() {
+            Some(Action::Prompt {
+                pane_id: p, text, ..
+            }) => {
+                assert_eq!((p, text.as_str()), (pane_id, "run the tests"))
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     fn idea(project: &App, i: usize, name: &str) -> Idea {

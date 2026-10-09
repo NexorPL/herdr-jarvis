@@ -1,6 +1,6 @@
 //! Popups drawn over the current screen: forms, the delete popup and the run picker.
 
-use super::app::{App, Confirm, Form, Picker};
+use super::app::{App, Confirm, Form, FormKind, Picker};
 use super::theme::Palette;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -62,10 +62,11 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
             Style::new().fg(pal.alert),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        "Tab next field · Enter save · Esc cancel",
-        Style::new().fg(pal.dim),
-    )));
+    let hint = match form.kind {
+        FormKind::Prompt { .. } => "Enter send · Esc cancel",
+        _ => "Tab next field · Enter save · Esc cancel",
+    };
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
     popup(f, area, &form.title, lines, pal);
 }
 
