@@ -3,7 +3,7 @@
 use super::theme::Palette;
 use crate::config::{Animation, Config};
 use crate::herdr::AgentStatus;
-use crate::ideas::Idea;
+use crate::ideas::{Idea, Status as IdeaStatus};
 use crate::model::{AgentRow, EventRow, Model, Project, ThreadRow};
 use crate::pricing::Pricing;
 use crate::run::{self, Layout, Step, Target};
@@ -215,6 +215,7 @@ pub struct App {
     pub search: String,
     pub search_editing: bool,
     pub state_filter: Option<AgentStatus>,
+    pub idea_filter: Option<IdeaStatus>,
     pub range: Range,
     pub project_filter: Option<String>,
     pub show_help: bool,
@@ -254,6 +255,7 @@ impl App {
             search: String::new(),
             search_editing: false,
             state_filter: None,
+            idea_filter: None,
             range: Range::Today,
             project_filter: None,
             show_help: false,
@@ -424,6 +426,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, i)| scope.is_none_or(|k| i.project_key == k))
+            .filter(|(_, i)| self.idea_filter.is_none_or(|s| i.status == s))
             .filter(|(_, i)| {
                 q.is_empty()
                     || i.name.to_lowercase().contains(&q)
@@ -630,6 +633,21 @@ impl App {
                 self.selected_row = 0;
             }
             KeyCode::Char('a') if self.tab() == Tab::Ideas => self.add_idea(),
+            KeyCode::Char(' ') if self.tab() == Tab::Ideas => {
+                if let Some(i) = (self.visible_ideas().get(self.selected_row)).map(|(i, _)| *i) {
+                    self.ideas[i].status = self.ideas[i].status.next();
+                    self.action = Some(Action::SaveIdeas);
+                    self.clamp();
+                }
+            }
+            KeyCode::Char('s') if self.tab() == Tab::Ideas => {
+                self.idea_filter = match self.idea_filter {
+                    None => Some(IdeaStatus::Todo),
+                    Some(IdeaStatus::Done) => None,
+                    Some(s) => Some(s.next()),
+                };
+                self.selected_row = 0;
+            }
             KeyCode::Char('e') if self.tab() == Tab::Ideas => self.edit_idea(),
             KeyCode::Char('d') if self.tab() == Tab::Ideas => {
                 let target = (self.visible_ideas().get(self.selected_row))
@@ -966,6 +984,9 @@ impl App {
                 let idea = Idea {
                     name: v[0].clone(),
                     description: v[1].clone(),
+                    status: (editing.and_then(|i| self.ideas.get(i)))
+                        .map(|i| i.status)
+                        .unwrap_or_default(),
                     project_key,
                     project_name,
                 };
@@ -1235,6 +1256,7 @@ mod tests {
             project_name: p.name.clone(),
             name: name.into(),
             description: String::new(),
+            status: IdeaStatus::Todo,
         }
     }
 
@@ -1247,6 +1269,41 @@ mod tests {
         key(&mut app, KeyCode::Char('A'));
         key(&mut app, KeyCode::Char('s'));
         assert_eq!(app.state_filter, Some(AgentStatus::Blocked));
+    }
+
+    #[test]
+    fn space_moves_an_idea_through_its_statuses_and_s_filters_them() {
+        let mut app = sample_app();
+        app.ideas = vec![idea(&app, 0, "first"), idea(&app, 0, "second")];
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ideas[0].status, IdeaStatus::Doing);
+        assert_eq!(app.action.take(), Some(Action::SaveIdeas));
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('!'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.ideas[0].name, "first!");
+        assert_eq!(
+            app.ideas[0].status,
+            IdeaStatus::Doing,
+            "editing keeps the status"
+        );
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.idea_filter, Some(IdeaStatus::Todo));
+        assert_eq!(app.visible_ideas()[0].1.name, "second");
+        key(&mut app, KeyCode::Char('s'));
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ideas[0].status, IdeaStatus::Done);
+        assert!(
+            app.visible_ideas().is_empty(),
+            "done leaves the doing filter"
+        );
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.ideas[0].status, IdeaStatus::Done);
+        key(&mut app, KeyCode::Char('s'));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.idea_filter, None);
+        assert_eq!(app.state_filter, None);
     }
 
     #[test]
@@ -1286,6 +1343,7 @@ mod tests {
                 project_name: "beta".into(),
                 name: "Cache q?5".into(),
                 description: "keep 24h".into(),
+                status: IdeaStatus::Todo,
             }]
         );
 

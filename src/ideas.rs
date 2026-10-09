@@ -11,4 +11,33 @@ pub struct Idea {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    #[default]
+    Todo,
+    Doing,
+    Done,
+}
+
+impl Status {
+    pub fn next(self) -> Status {
+        match self {
+            Status::Todo => Status::Doing,
+            Status::Doing => Status::Done,
+            Status::Done => Status::Todo,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Todo => "○ todo",
+            Status::Doing => "◐ doing",
+            Status::Done => "✓ done",
+        }
+    }
 }

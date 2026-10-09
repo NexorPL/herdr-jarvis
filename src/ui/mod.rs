@@ -59,6 +59,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
+                "        Space todo → doing → done · s status filter",
                 "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
                 "        Esc back · r refresh · q quit · ? this help",
             ],

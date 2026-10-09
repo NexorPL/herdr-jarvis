@@ -41,6 +41,7 @@ mod tests {
             project_name: "alpha".into(),
             name: name.into(),
             description: format!("about {name}"),
+            status: Default::default(),
         }
     }
 
@@ -63,6 +64,21 @@ mod tests {
             vec![idea("a"), idea("Zażółć")]
         );
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn ideas_saved_before_statuses_load_as_todo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ideas.json");
+        fs::write(
+            &path,
+            r#"[{"project_key":"k","project_name":"p","name":"n","description":""}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load::<Idea>(&path).unwrap()[0].status,
+            crate::ideas::Status::Todo
+        );
     }
 
     #[test]

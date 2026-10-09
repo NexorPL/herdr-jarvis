@@ -46,6 +46,10 @@ Out of scope: showing GitHub issues next to ideas, turning an idea into an issue
   - `a` add. On the global view this needs a project filter (`f`), otherwise the status line says so.
   - `e` or `Enter` edit the selected idea.
   - `d` delete, through the delete popup (below).
+  - `Space` moves the selected idea to its next status: todo → doing → done → todo. Each idea has a
+    `status` (`todo`, `doing`, `done`; a file written before statuses existed loads as `todo`), shown as
+    `○ todo`, `◐ doing`, `✓ done` in a first column; done ideas are dimmed. Editing keeps the status.
+  - `s` filters by status: all → todo → doing → done → all. It is separate from the agent state filter.
 - Form: an overlay with two single-line fields, Name and Description. `Tab`/`BackTab` move between fields,
   typing edits the focused field, `Backspace` deletes, `Enter` saves (an empty name is refused with a status
   message), `Esc` cancels. While the form is open it takes every key. Ideas and run targets share this form.

@@ -34,7 +34,7 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
   the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
-- **Ideas**: a fifth tab with a list of ideas per project (name and description), stored in the plugin
+- **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
 - **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
   (see below).
@@ -50,7 +50,7 @@ timeline, without threads or cost.
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
-| Ideas tab | `a` add · `e` / `Enter` edit · `d` delete |
+| Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
 | Forms | `Tab` / `Shift+Tab` switch field · `Enter` save · `Esc` cancel |
 | Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |

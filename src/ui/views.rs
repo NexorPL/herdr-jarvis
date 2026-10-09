@@ -2,6 +2,7 @@
 
 use super::app::{App, Screen, Tab};
 use super::theme::{self, Palette};
+use crate::ideas::Status as IdeaStatus;
 use crate::model::{self, GroupBy, UsageRow};
 use ratatui::prelude::*;
 use ratatui::widgets::{
@@ -84,7 +85,7 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
         hint.push_str(" · w range");
     }
     if app.tab() == Tab::Ideas {
-        hint.push_str(" · a add · e edit · d delete");
+        hint.push_str(" · a add · e edit · d delete · Space status · s filter");
     }
     if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
         hint.push_str(" · x run");
@@ -103,6 +104,12 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
     if let Some(s) = app.state_filter.filter(|_| app.tab().has_state()) {
         spans.push(Span::styled(
             format!("   state: {}", theme::word(s)),
+            Style::new().fg(pal.warn),
+        ));
+    }
+    if let Some(s) = app.idea_filter.filter(|_| app.tab() == Tab::Ideas) {
+        spans.push(Span::styled(
+            format!("   status: {}", s.label()),
             Style::new().fg(pal.warn),
         ));
     }
@@ -401,10 +408,15 @@ fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let body: Vec<Row> = rows
         .iter()
         .map(|(_, i)| {
-            let mut cells = vec![Cell::from(Span::styled(
-                i.name.clone(),
-                Style::new().bold(),
-            ))];
+            let (color, name) = match i.status {
+                IdeaStatus::Todo => (pal.dim, Style::new().bold()),
+                IdeaStatus::Doing => (pal.warn, Style::new().bold()),
+                IdeaStatus::Done => (pal.ok, Style::new().fg(pal.dim)),
+            };
+            let mut cells = vec![
+                Cell::from(Span::styled(i.status.label(), Style::new().fg(color))),
+                Cell::from(Span::styled(i.name.clone(), name)),
+            ];
             if global {
                 cells.push(Cell::from(Span::styled(
                     i.project_name.clone(),
@@ -415,8 +427,8 @@ fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
             Row::new(cells)
         })
         .collect();
-    let mut widths = vec![Constraint::Length(28)];
-    let mut header = vec!["idea"];
+    let mut widths = vec![Constraint::Length(8), Constraint::Length(28)];
+    let mut header = vec!["status", "idea"];
     if global {
         widths.push(Constraint::Length(18));
         header.push("project");
@@ -613,10 +625,12 @@ mod tests {
             project_name: "alpha".into(),
             name: "Pricing cache".into(),
             description: "keep prices for 24h".into(),
+            status: crate::ideas::Status::Doing,
         }];
         app.screen = Screen::Global(Tab::Ideas);
         let out = screen(&app, 120, 30);
         assert!(out.contains("Pricing cache"));
+        assert!(out.contains("◐ doing"));
         assert!(out.contains("alpha"));
         assert!(out.contains("keep prices for 24h"));
         assert!(out.contains("a add"));
