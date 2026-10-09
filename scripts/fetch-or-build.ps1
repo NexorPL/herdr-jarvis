@@ -6,13 +6,16 @@ $Root = Join-Path $PSScriptRoot '..'
 $Out = Join-Path $Root 'target\release\jarvis.exe'
 
 # A running collector keeps jarvis.exe locked; Windows still allows renaming it, so move it aside
-# and remove older leftovers that are no longer running.
+# and remove older leftovers that are no longer running. cargo links target\release\deps\jarvis.exe
+# and hard-links target\release\jarvis.exe to it, so both names point at the locked file.
 function Move-Aside {
-    if (Test-Path $Out) {
-        Rename-Item -Path $Out -NewName ('jarvis.exe.old-' + [guid]::NewGuid().ToString('N'))
+    foreach ($exe in @($Out, (Join-Path (Split-Path -Parent $Out) 'deps\jarvis.exe'))) {
+        if (Test-Path $exe) {
+            Rename-Item -Path $exe -NewName ('jarvis.exe.old-' + [guid]::NewGuid().ToString('N'))
+        }
+        Get-ChildItem -Path (Split-Path -Parent $exe) -Filter 'jarvis.exe.old-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
     }
-    Get-ChildItem -Path (Split-Path -Parent $Out) -Filter 'jarvis.exe.old-*' -ErrorAction SilentlyContinue |
-        ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
 function Build-FromSource([string]$Reason) {

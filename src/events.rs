@@ -199,6 +199,7 @@ mod tests {
                 value: format!("sess-{id}"),
             }),
             terminal_title_stripped: Some("Fix parser".into()),
+            label: None,
             focused: false,
         }
     }

@@ -339,8 +339,11 @@ README suggests binding `jarvis.open` to `prefix+j`.
 4. The TUI's `ensure-collector` starts a detached collector that survives the pane closing; a second `ensure`
    does not start a duplicate.
 5. Both build scripts fall back to `cargo build --release` when no release exists.
-6. Not yet verified (needs a person at the keyboard): the action as an overlay, `Enter` focusing a pane in another
-   workspace after the overlay closes, and `[[startup]]` starting the collector after a herdr server restart.
+6. Verified later by the user: `[[startup]]` starts the collector after a herdr restart, and `Enter` focuses a
+   pane in another workspace.
+7. herdr restores the layout of a closed session but not plugin processes: the "Jarvis" tab comes back as a plain
+   shell. `ensure-collector` therefore also replaces restored panes labelled "Jarvis" with a live Jarvis when none
+   is running, then gives the focus back (herdr activates a newly opened tab even with `focus: false`).
 
 ## 11. Distribution
 

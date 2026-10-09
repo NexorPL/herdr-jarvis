@@ -32,6 +32,9 @@ pub struct Pane {
     pub agent_session: Option<AgentSession>,
     #[serde(default)]
     pub terminal_title_stripped: Option<String>,
+    /// Pane label; plugin panes carry their manifest title (Jarvis: "Jarvis").
+    #[serde(default)]
+    pub label: Option<String>,
     #[serde(default)]
     pub focused: bool,
 }
@@ -61,6 +64,8 @@ pub struct Snapshot {
     pub version: String,
     #[serde(default)]
     pub protocol: u32,
+    #[serde(default)]
+    pub focused_pane_id: Option<String>,
     #[serde(default)]
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
