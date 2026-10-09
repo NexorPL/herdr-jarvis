@@ -76,7 +76,10 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
 }
 
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
-    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search · s state");
+    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search");
+    if app.tab().has_state() {
+        hint.push_str(" · s state");
+    }
     if app.tab() == Tab::Timeline {
         hint.push_str(" · w range");
     }
@@ -97,7 +100,7 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
             Style::new().fg(pal.accent),
         ));
     }
-    if let Some(s) = app.state_filter {
+    if let Some(s) = app.state_filter.filter(|_| app.tab().has_state()) {
         spans.push(Span::styled(
             format!("   state: {}", theme::word(s)),
             Style::new().fg(pal.warn),

@@ -42,6 +42,11 @@ impl Tab {
             Tab::Ideas => "Ideas",
         }
     }
+
+    /// Only agents and timeline events have a state to filter by.
+    pub fn has_state(self) -> bool {
+        matches!(self, Tab::Agents | Tab::Timeline)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,7 +605,7 @@ impl App {
             }
             KeyCode::Enter => self.activate_row(),
             KeyCode::Char('/') => self.search_editing = true,
-            KeyCode::Char('s') => {
+            KeyCode::Char('s') if self.tab().has_state() => {
                 self.state_filter = match self.state_filter {
                     None => Some(AgentStatus::Blocked),
                     Some(AgentStatus::Blocked) => Some(AgentStatus::Done),
@@ -1231,6 +1236,17 @@ mod tests {
             name: name.into(),
             description: String::new(),
         }
+    }
+
+    #[test]
+    fn state_filter_only_on_agents_and_timeline() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.state_filter, None);
+        key(&mut app, KeyCode::Char('A'));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.state_filter, Some(AgentStatus::Blocked));
     }
 
     #[test]
