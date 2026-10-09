@@ -32,6 +32,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Tab::Threads => threads(f, body, app, pal),
         Tab::Timeline => timeline(f, body, app, pal),
         Tab::Usage => usage(f, body, app, pal),
+        Tab::Ideas => empty(f, body, "no ideas yet", pal),
     }
     f.render_widget(Paragraph::new(footer_line(app, pal)), footer);
 }

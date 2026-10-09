@@ -3,6 +3,7 @@
 use super::theme::Palette;
 use crate::config::{Animation, Config};
 use crate::herdr::AgentStatus;
+use crate::ideas::Idea;
 use crate::model::{AgentRow, EventRow, Model, Project, ThreadRow};
 use crate::pricing::Pricing;
 use chrono::{DateTime, Duration, Local, Utc};
@@ -18,10 +19,17 @@ pub enum Tab {
     Threads,
     Timeline,
     Usage,
+    Ideas,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Agents, Tab::Threads, Tab::Timeline, Tab::Usage];
+    pub const ALL: [Tab; 5] = [
+        Tab::Agents,
+        Tab::Threads,
+        Tab::Timeline,
+        Tab::Usage,
+        Tab::Ideas,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -29,6 +37,7 @@ impl Tab {
             Tab::Threads => "Threads",
             Tab::Timeline => "Timeline",
             Tab::Usage => "Usage",
+            Tab::Ideas => "Ideas",
         }
     }
 }
@@ -79,10 +88,34 @@ impl Range {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     FocusPane(String),
     Copy(String),
+    /// `ideas` changed; write them to disk.
+    SaveIdeas,
+}
+
+/// The add/edit idea popup; while open it takes every key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdeaForm {
+    /// Index into `App::ideas` when editing; `None` adds a new idea.
+    pub editing: Option<usize>,
+    pub project_key: String,
+    pub project_name: String,
+    pub name: String,
+    pub description: String,
+    pub on_description: bool,
+}
+
+impl IdeaForm {
+    pub fn field(&mut self) -> &mut String {
+        if self.on_description {
+            &mut self.description
+        } else {
+            &mut self.name
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +180,10 @@ pub struct App {
     pub looking: bool,
     /// When the focus last left Jarvis; blocked/done changes after it are new to you.
     pub last_left: DateTime<Utc>,
+    pub ideas: Vec<Idea>,
+    pub form: Option<IdeaForm>,
+    /// Index into `ideas` waiting for `y` to be deleted.
+    pub confirm_delete: Option<usize>,
 }
 
 impl App {
@@ -179,6 +216,9 @@ impl App {
             action: None,
             looking: false,
             last_left: Utc::now(),
+            ideas: Vec::new(),
+            form: None,
+            confirm_delete: None,
         }
     }
 
@@ -324,12 +364,29 @@ impl App {
             .collect()
     }
 
+    /// Ideas in scope that match the search, with their index into `ideas`.
+    pub fn visible_ideas(&self) -> Vec<(usize, &Idea)> {
+        let scope = self.scope();
+        let q = self.search.to_lowercase();
+        self.ideas
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| scope.is_none_or(|k| i.project_key == k))
+            .filter(|(_, i)| {
+                q.is_empty()
+                    || i.name.to_lowercase().contains(&q)
+                    || i.description.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
     pub fn row_count(&self) -> usize {
         match self.tab() {
             Tab::Agents => self.visible_agents().len(),
             Tab::Threads => self.visible_threads().len(),
             Tab::Timeline => self.visible_events().len(),
             Tab::Usage => 0,
+            Tab::Ideas => self.visible_ideas().len(),
         }
     }
 
@@ -362,6 +419,19 @@ impl App {
             self.show_help = false;
             return;
         }
+        if self.form.is_some() {
+            self.on_form_key(key);
+            return;
+        }
+        if let Some(i) = self.confirm_delete.take() {
+            self.status = None;
+            if key.code == KeyCode::Char('y') && i < self.ideas.len() {
+                self.ideas.remove(i);
+                self.action = Some(Action::SaveIdeas);
+                self.clamp();
+            }
+            return;
+        }
         if self.search_editing {
             self.on_search_key(key);
             return;
@@ -374,6 +444,7 @@ impl App {
             KeyCode::Char('T') => self.goto(Screen::Global(Tab::Threads)),
             KeyCode::Char('L') => self.goto(Screen::Global(Tab::Timeline)),
             KeyCode::Char('U') => self.goto(Screen::Global(Tab::Usage)),
+            KeyCode::Char('I') => self.goto(Screen::Global(Tab::Ideas)),
             _ if self.screen == Screen::Core => self.on_core_key(key),
             _ => self.on_list_key(key),
         }
@@ -470,9 +541,11 @@ impl App {
         match key.code {
             KeyCode::Esc if !self.search.is_empty() => self.search.clear(),
             KeyCode::Esc => self.goto(Screen::Core),
-            KeyCode::Tab => self.set_tab(Tab::ALL[(tab_index + 1) % 4]),
-            KeyCode::BackTab => self.set_tab(Tab::ALL[(tab_index + 3) % 4]),
-            KeyCode::Char(c @ '1'..='4') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
+            KeyCode::Tab => self.set_tab(Tab::ALL[(tab_index + 1) % Tab::ALL.len()]),
+            KeyCode::BackTab => {
+                self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
+            }
+            KeyCode::Char(c @ '1'..='5') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_row = self.selected_row.saturating_sub(1)
             }
@@ -505,6 +578,16 @@ impl App {
                 self.project_filter = next;
                 self.selected_row = 0;
             }
+            KeyCode::Char('a') if self.tab() == Tab::Ideas => self.add_idea(),
+            KeyCode::Char('e') if self.tab() == Tab::Ideas => self.edit_idea(),
+            KeyCode::Char('d') if self.tab() == Tab::Ideas => {
+                let target = (self.visible_ideas().get(self.selected_row))
+                    .map(|(i, idea)| (*i, idea.name.clone()));
+                if let Some((i, name)) = target {
+                    self.status = Some(format!("delete \"{name}\"? y/n"));
+                    self.confirm_delete = Some(i);
+                }
+            }
             _ => {}
         }
     }
@@ -536,8 +619,83 @@ impl App {
                     None => {}
                 }
             }
+            Tab::Ideas => self.edit_idea(),
             Tab::Timeline | Tab::Usage => {}
         }
+    }
+
+    fn add_idea(&mut self) {
+        let Some(key) = self.scope().map(str::to_string) else {
+            self.status = Some("pick a project with f to add an idea here".into());
+            return;
+        };
+        self.form = Some(IdeaForm {
+            editing: None,
+            project_name: self.project_name(&key),
+            project_key: key,
+            name: String::new(),
+            description: String::new(),
+            on_description: false,
+        });
+    }
+
+    fn edit_idea(&mut self) {
+        let target =
+            (self.visible_ideas().get(self.selected_row)).map(|(i, idea)| (*i, (*idea).clone()));
+        if let Some((i, idea)) = target {
+            self.form = Some(IdeaForm {
+                editing: Some(i),
+                project_key: idea.project_key,
+                project_name: idea.project_name,
+                name: idea.name,
+                description: idea.description,
+                on_description: false,
+            });
+        }
+    }
+
+    fn on_form_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.form = None,
+            KeyCode::Enter => self.submit_form(),
+            code => {
+                let Some(form) = self.form.as_mut() else {
+                    return;
+                };
+                match code {
+                    KeyCode::Tab | KeyCode::BackTab => form.on_description = !form.on_description,
+                    KeyCode::Backspace => {
+                        form.field().pop();
+                    }
+                    KeyCode::Char(c) => form.field().push(c),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn submit_form(&mut self) {
+        let Some(form) = self.form.take() else {
+            return;
+        };
+        let name = form.name.trim().to_string();
+        if name.is_empty() {
+            self.status = Some("an idea needs a name".into());
+            self.form = Some(form);
+            return;
+        }
+        let idea = Idea {
+            name,
+            description: form.description.trim().to_string(),
+            project_key: form.project_key,
+            project_name: form.project_name,
+        };
+        match form.editing {
+            Some(i) if i < self.ideas.len() => self.ideas[i] = idea,
+            _ => self.ideas.push(idea),
+        }
+        self.status = None;
+        self.action = Some(Action::SaveIdeas);
     }
 }
 
@@ -554,6 +712,7 @@ pub fn sample_app() -> App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ideas::Idea;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(app: &mut App, code: KeyCode) {
@@ -764,5 +923,138 @@ mod tests {
         app.fatal = Some("protocol".into());
         key(&mut app, KeyCode::Char('x'));
         assert!(app.quit);
+    }
+
+    fn idea(project: &App, i: usize, name: &str) -> Idea {
+        let p = &project.model.projects[i];
+        Idea {
+            project_key: p.key.clone(),
+            project_name: p.name.clone(),
+            name: name.into(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn ideas_tab_is_reachable_like_the_others() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('I'));
+        assert_eq!(app.screen, Screen::Global(Tab::Ideas));
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.tab(), Tab::Agents);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.tab(), Tab::Ideas);
+        key(&mut app, KeyCode::Char('1'));
+        key(&mut app, KeyCode::Char('5'));
+        assert_eq!(app.tab(), Tab::Ideas);
+    }
+
+    #[test]
+    fn add_edit_and_delete_an_idea_in_a_project() {
+        let mut app = sample_app();
+        let beta = app.model.projects[0].key.clone();
+        app.screen = Screen::Project {
+            key: beta.clone(),
+            tab: Tab::Ideas,
+        };
+        key(&mut app, KeyCode::Char('a'));
+        chars(&mut app, "Cache q?5");
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "keep 24h");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.is_none());
+        assert!(!app.quit);
+        assert_eq!(app.action.take(), Some(Action::SaveIdeas));
+        assert_eq!(
+            app.ideas,
+            vec![Idea {
+                project_key: beta,
+                project_name: "beta".into(),
+                name: "Cache q?5".into(),
+                description: "keep 24h".into(),
+            }]
+        );
+
+        key(&mut app, KeyCode::Char('e'));
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Backspace);
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.ideas[0].name, "Cache");
+        assert_eq!(app.ideas[0].description, "keep 24h");
+        assert_eq!(app.action.take(), Some(Action::SaveIdeas));
+
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.status.as_deref(), Some("delete \"Cache\"? y/n"));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.ideas.len(), 1);
+        assert_eq!(app.action, None);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('y'));
+        assert!(app.ideas.is_empty());
+        assert_eq!(app.action, Some(Action::SaveIdeas));
+    }
+
+    #[test]
+    fn form_refuses_an_empty_name_and_esc_cancels() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Ideas,
+        };
+        key(&mut app, KeyCode::Char('a'));
+        chars(&mut app, "  ");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.form.is_some());
+        assert_eq!(app.status.as_deref(), Some("an idea needs a name"));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.form.is_none());
+        assert!(app.ideas.is_empty());
+        assert!(matches!(app.screen, Screen::Project { .. }));
+    }
+
+    #[test]
+    fn form_backspace_removes_whole_characters() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Ideas,
+        };
+        key(&mut app, KeyCode::Char('a'));
+        chars(&mut app, "Zażółć");
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.form.as_ref().unwrap().name, "Zażó");
+    }
+
+    #[test]
+    fn global_ideas_need_a_filter_to_add_and_list_every_project() {
+        let mut app = sample_app();
+        app.ideas = vec![idea(&app, 0, "beta idea"), idea(&app, 1, "alpha idea")];
+        key(&mut app, KeyCode::Char('I'));
+        assert_eq!(app.visible_ideas().len(), 2);
+        key(&mut app, KeyCode::Char('a'));
+        assert!(app.form.is_none());
+        assert!(app.status.as_deref().unwrap().contains("pick a project with f"));
+        key(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.visible_ideas().len(), 1);
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.form.as_ref().unwrap().project_name, "beta");
+    }
+
+    #[test]
+    fn edit_and_delete_follow_the_filtered_row() {
+        let mut app = sample_app();
+        app.ideas = vec![idea(&app, 0, "first"), idea(&app, 1, "second")];
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Char('/'));
+        chars(&mut app, "second");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.form.as_ref().unwrap().editing, Some(1));
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.ideas, vec![idea(&app, 0, "first")]);
     }
 }

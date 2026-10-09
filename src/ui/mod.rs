@@ -11,7 +11,7 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, model, paths};
+use crate::{collector, ideas, model, paths};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
@@ -159,12 +159,17 @@ pub fn run() -> anyhow::Result<()> {
         state.join("collector.lock"),
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
+    let ideas_path = state.join("ideas.json");
+    match ideas::load(&ideas_path) {
+        Ok(list) => app.ideas = list,
+        Err(e) => app.status = Some(e),
+    }
     let mut terminal = ratatui::init();
     let me = Me {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
     };
-    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me);
+    let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &ideas_path);
     ratatui::restore();
     result
 }
@@ -181,6 +186,7 @@ fn event_loop(
     watch: &Receiver<WatchMsg>,
     sources: &Receiver<SourceUpdate>,
     me: &Me,
+    ideas_path: &Path,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let mut tab_label = String::new();
@@ -252,6 +258,11 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
+            Some(Action::SaveIdeas) => {
+                if let Err(e) = ideas::save(ideas_path, &app.ideas) {
+                    app.status = Some(format!("could not save ideas: {e}"));
+                }
+            }
             None => {}
         }
     }
