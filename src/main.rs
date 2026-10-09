@@ -9,6 +9,7 @@ mod paths;
 mod pricing;
 mod projects;
 mod run;
+mod store;
 mod transcripts;
 mod ui;
 

@@ -1,6 +1,6 @@
-//! Popups drawn over the current screen: the idea form and the run picker.
+//! Popups drawn over the current screen: forms and the run picker.
 
-use super::app::{App, IdeaForm, Picker};
+use super::app::{App, Form, Picker};
 use super::theme::Palette;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -26,40 +26,29 @@ pub fn popup(f: &mut Frame, area: Rect, title: &str, lines: Vec<Line<'static>>, 
     );
 }
 
-pub fn idea_form(f: &mut Frame, area: Rect, app: &App, form: &IdeaForm) {
+pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
     let pal = &app.palette;
-    let field = |label: &str, value: &str, focused: bool| {
-        let style = if focused {
-            Style::new().fg(pal.accent).bold()
-        } else {
-            Style::new().fg(pal.dim)
-        };
-        Line::from(vec![
-            Span::styled(format!("{label:<12} "), style),
-            Span::raw(value.to_string()),
-            Span::styled(if focused { "▏" } else { "" }, Style::new().fg(pal.accent)),
-        ])
-    };
-    let lines = vec![
-        Line::from(Span::styled(
-            format!("{:<12} {}", "project", form.project_name),
-            Style::new().fg(pal.dim),
-        )),
-        Line::raw(""),
-        field("name", &form.name, !form.on_description),
-        field("description", &form.description, form.on_description),
-        Line::raw(""),
-        Line::from(Span::styled(
-            "Tab switch field · Enter save · Esc cancel",
-            Style::new().fg(pal.dim),
-        )),
-    ];
-    let title = if form.editing.is_some() {
-        " edit idea "
-    } else {
-        " new idea "
-    };
-    popup(f, area, title, lines, pal);
+    let mut lines: Vec<Line<'static>> = (form.fields.iter().enumerate())
+        .map(|(i, (label, value))| {
+            let focused = i == form.focus;
+            let style = if focused {
+                Style::new().fg(pal.accent).bold()
+            } else {
+                Style::new().fg(pal.dim)
+            };
+            Line::from(vec![
+                Span::styled(format!("{label:<12} "), style),
+                Span::raw(value.clone()),
+                Span::styled(if focused { "▏" } else { "" }, Style::new().fg(pal.accent)),
+            ])
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Tab next field · Enter save · Esc cancel",
+        Style::new().fg(pal.dim),
+    )));
+    popup(f, area, &form.title, lines, pal);
 }
 
 pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {

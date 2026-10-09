@@ -12,7 +12,7 @@ use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::claude::ClaudeSource;
 use crate::transcripts::Thread;
-use crate::{collector, ideas, model, paths, run};
+use crate::{collector, model, paths, run, store};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
@@ -40,7 +40,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
     }
     if let Some(form) = &app.form {
-        overlays::idea_form(f, body, app, form);
+        overlays::form(f, body, app, form);
     }
     if let Some(p) = &app.picker {
         overlays::picker(f, body, app, p);
@@ -151,7 +151,7 @@ pub fn run() -> anyhow::Result<()> {
     );
     let mut app = App::new(&config, Pricing::new(config.pricing.clone()));
     let ideas_path = state.join("ideas.json");
-    match ideas::load(&ideas_path) {
+    match store::load(&ideas_path) {
         Ok(list) => app.ideas = list,
         Err(e) => app.status = Some(e),
     }
@@ -250,7 +250,7 @@ fn event_loop(
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
             Some(Action::SaveIdeas) => {
-                if let Err(e) = ideas::save(ideas_path, &app.ideas) {
+                if let Err(e) = store::save(ideas_path, &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));
                 }
             }
@@ -355,13 +355,18 @@ mod tests {
             key: app.model.projects[0].key.clone(),
             tab: Tab::Ideas,
         };
-        app.form = Some(crate::ui::app::IdeaForm {
-            editing: None,
-            project_key: app.model.projects[0].key.clone(),
-            project_name: "beta".into(),
-            name: "Export".into(),
-            description: "usage to CSV".into(),
-            on_description: true,
+        app.form = Some(crate::ui::app::Form {
+            title: " new idea · beta ".into(),
+            kind: crate::ui::app::FormKind::Idea {
+                editing: None,
+                project_key: app.model.projects[0].key.clone(),
+                project_name: "beta".into(),
+            },
+            fields: vec![
+                ("name", "Export".into()),
+                ("description", "usage to CSV".into()),
+            ],
+            focus: 1,
         });
         let out = render(100, 30, |f| draw(f, &app));
         assert!(out.contains("new idea"));

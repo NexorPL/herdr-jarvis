@@ -105,26 +105,23 @@ pub enum Action {
     },
 }
 
-/// The add/edit idea popup; while open it takes every key.
+/// What a form saves on Enter. `editing` indexes the list it edits; `None` adds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdeaForm {
-    /// Index into `App::ideas` when editing; `None` adds a new idea.
-    pub editing: Option<usize>,
-    pub project_key: String,
-    pub project_name: String,
-    pub name: String,
-    pub description: String,
-    pub on_description: bool,
+pub enum FormKind {
+    Idea {
+        editing: Option<usize>,
+        project_key: String,
+        project_name: String,
+    },
 }
 
-impl IdeaForm {
-    pub fn field(&mut self) -> &mut String {
-        if self.on_description {
-            &mut self.description
-        } else {
-            &mut self.name
-        }
-    }
+/// A popup of labelled single-line fields; while open it takes every key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Form {
+    pub title: String,
+    pub kind: FormKind,
+    pub fields: Vec<(&'static str, String)>,
+    pub focus: usize,
 }
 
 /// Where `x` starts targets: the project's name, the agent's workspace and the folder holding `.jarvis/run.toml`.
@@ -208,7 +205,7 @@ pub struct App {
     /// When the focus last left Jarvis; blocked/done changes after it are new to you.
     pub last_left: DateTime<Utc>,
     pub ideas: Vec<Idea>,
-    pub form: Option<IdeaForm>,
+    pub form: Option<Form>,
     /// Index into `ideas` waiting for `y` to be deleted.
     pub confirm_delete: Option<usize>,
     pub picker: Option<Picker>,
@@ -772,13 +769,16 @@ impl App {
             self.status = Some("pick a project with f to add an idea here".into());
             return;
         };
-        self.form = Some(IdeaForm {
-            editing: None,
-            project_name: self.project_name(&key),
-            project_key: key,
-            name: String::new(),
-            description: String::new(),
-            on_description: false,
+        let project_name = self.project_name(&key);
+        self.form = Some(Form {
+            title: format!(" new idea · {project_name} "),
+            kind: FormKind::Idea {
+                editing: None,
+                project_key: key,
+                project_name,
+            },
+            fields: vec![("name", String::new()), ("description", String::new())],
+            focus: 0,
         });
     }
 
@@ -786,13 +786,15 @@ impl App {
         let target =
             (self.visible_ideas().get(self.selected_row)).map(|(i, idea)| (*i, (*idea).clone()));
         if let Some((i, idea)) = target {
-            self.form = Some(IdeaForm {
-                editing: Some(i),
-                project_key: idea.project_key,
-                project_name: idea.project_name,
-                name: idea.name,
-                description: idea.description,
-                on_description: false,
+            self.form = Some(Form {
+                title: format!(" edit idea · {} ", idea.project_name),
+                kind: FormKind::Idea {
+                    editing: Some(i),
+                    project_key: idea.project_key,
+                    project_name: idea.project_name,
+                },
+                fields: vec![("name", idea.name), ("description", idea.description)],
+                focus: 0,
             });
         }
     }
@@ -808,12 +810,14 @@ impl App {
                 let Some(form) = self.form.as_mut() else {
                     return;
                 };
+                let n = form.fields.len();
                 match code {
-                    KeyCode::Tab | KeyCode::BackTab => form.on_description = !form.on_description,
+                    KeyCode::Tab => form.focus = (form.focus + 1) % n,
+                    KeyCode::BackTab => form.focus = (form.focus + n - 1) % n,
                     KeyCode::Backspace => {
-                        form.field().pop();
+                        form.fields[form.focus].1.pop();
                     }
-                    KeyCode::Char(c) => form.field().push(c),
+                    KeyCode::Char(c) => form.fields[form.focus].1.push(c),
                     _ => {}
                 }
             }
@@ -824,19 +828,26 @@ impl App {
         let Some(form) = self.form.take() else {
             return;
         };
-        let name = form.name.trim().to_string();
-        if name.is_empty() {
+        let v: Vec<String> = (form.fields.iter())
+            .map(|(_, s)| s.trim().to_string())
+            .collect();
+        if v[0].is_empty() {
             self.status = Some("an idea needs a name".into());
             self.form = Some(form);
             return;
         }
+        let FormKind::Idea {
+            editing,
+            project_key,
+            project_name,
+        } = form.kind;
         let idea = Idea {
-            name,
-            description: form.description.trim().to_string(),
-            project_key: form.project_key,
-            project_name: form.project_name,
+            name: v[0].clone(),
+            description: v[1].clone(),
+            project_key,
+            project_name,
         };
-        match form.editing {
+        match editing {
             Some(i) if i < self.ideas.len() => self.ideas[i] = idea,
             _ => self.ideas.push(idea),
         }
@@ -1173,7 +1184,7 @@ mod tests {
         chars(&mut app, "Zażółć");
         key(&mut app, KeyCode::Backspace);
         key(&mut app, KeyCode::Backspace);
-        assert_eq!(app.form.as_ref().unwrap().name, "Zażó");
+        assert_eq!(app.form.as_ref().unwrap().fields[0].1, "Zażó");
     }
 
     #[test]
@@ -1192,7 +1203,7 @@ mod tests {
         key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.visible_ideas().len(), 1);
         key(&mut app, KeyCode::Char('a'));
-        assert_eq!(app.form.as_ref().unwrap().project_name, "beta");
+        assert_eq!(app.form.as_ref().unwrap().title, " new idea · beta ");
     }
 
     #[test]
@@ -1204,7 +1215,13 @@ mod tests {
         chars(&mut app, "second");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.form.as_ref().unwrap().editing, Some(1));
+        assert!(matches!(
+            app.form.as_ref().unwrap().kind,
+            FormKind::Idea {
+                editing: Some(1),
+                ..
+            }
+        ));
         key(&mut app, KeyCode::Esc);
         key(&mut app, KeyCode::Char('d'));
         key(&mut app, KeyCode::Char('y'));
