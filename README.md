@@ -21,7 +21,7 @@ the same key jumps to its tab instead of starting a second one:
 
 ```toml
 [[keys.command]]
-key = "prefix+j"
+key = "ctrl+alt+j"  # prefix+j is taken: it moves to the pane below
 type = "shell"
 command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 ```
