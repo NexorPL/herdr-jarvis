@@ -32,8 +32,11 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
   is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a feed of
   the latest events at the bottom.
-- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline and Usage for that project.
+- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
+- **Ideas**: a fifth tab with a list of ideas per project (name and description), stored in the plugin
+  state directory (`ideas.json`). `I` shows the ideas of every project.
+- **Run targets**: `x` starts a project's processes declared in `.jarvis/run.toml` (see below).
 
 Projects are grouped by git repository; linked worktrees sit under their main repository. Threads and
 usage come from Claude Code transcripts (`~/.claude/projects`); other agents appear in the tree and the
@@ -43,10 +46,34 @@ timeline, without threads or cost.
 
 | Where | Keys |
 |---|---|
-| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` all-project views |
-| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`4` switch views |
-| Filters | `/` search threads · `s` state · `w` time range (timeline) · `f` project (all-project views) |
+| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
+| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
+| Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
+| Ideas tab | `a` add · `e` / `Enter` edit · `d` delete (`y` confirms) · in the form `Tab` switches field, `Enter` saves, `Esc` cancels |
+| Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
+
+## Run targets
+
+Declare a project's processes in `.jarvis/run.toml` at the project root (or the worktree root), versioned
+with the project:
+
+```toml
+[[target]]
+name = "backend"
+cwd = "services/api"        # relative to the project root; default "."
+command = "npm run dev"
+env = { PORT = "3001" }     # optional
+
+[[target]]
+name = "web-admin"
+cwd = "apps/admin"
+command = "pnpm dev"
+```
+
+Each target starts in a new pane running your shell, labelled `<project>:<target>`, so it stays open
+when the command exits. A target whose pane is still open counts as running: Jarvis marks it in the
+picker and focuses it instead of starting it twice.
 
 ## Configuration
 
