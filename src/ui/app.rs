@@ -143,6 +143,10 @@ pub struct App {
     pub quit: bool,
     pub refresh: bool,
     pub action: Option<Action>,
+    /// Whether herdr's focus is on Jarvis's own pane.
+    pub looking: bool,
+    /// When the focus last left Jarvis; blocked/done changes after it are new to you.
+    pub last_left: DateTime<Utc>,
 }
 
 impl App {
@@ -173,7 +177,44 @@ impl App {
             quit: false,
             refresh: false,
             action: None,
+            looking: false,
+            last_left: Utc::now(),
         }
+    }
+
+    /// Blocked or done since the focus last left Jarvis, so not seen yet.
+    pub fn is_new(&self, a: &AgentRow) -> bool {
+        matches!(
+            a.pane.agent_status,
+            AgentStatus::Blocked | AgentStatus::Done
+        ) && a.since.is_some_and(|t| t > self.last_left)
+    }
+
+    pub fn new_in(&self, p: &Project) -> usize {
+        p.agents.iter().filter(|a| self.is_new(a)).count()
+    }
+
+    /// Leaving Jarvis marks everything it showed as seen.
+    pub fn set_looking(&mut self, looking: bool) {
+        if self.looking && !looking {
+            self.last_left = self.now;
+        }
+        self.looking = looking;
+    }
+
+    /// Label for Jarvis's tab: every blocked agent, plus done ones not seen yet.
+    pub fn tab_label(&self) -> String {
+        let new_done = (self.model.projects.iter().flat_map(|p| &p.agents))
+            .filter(|a| a.pane.agent_status == AgentStatus::Done && self.is_new(a))
+            .count();
+        let mut label = String::from("Jarvis");
+        if self.model.totals.blocked > 0 {
+            label += &format!(" ▲{}", self.model.totals.blocked);
+        }
+        if new_done > 0 {
+            label += &format!(" ✓{new_done}");
+        }
+        label
     }
 
     /// Core-view nodes: one per project, the overflow folded into a final `More` node.
@@ -505,6 +546,7 @@ pub fn sample_app() -> App {
     let mut app = App::new(&Config::default(), Pricing::new(Default::default()));
     app.model = crate::model::testkit::model();
     app.now = crate::model::testkit::ts("2026-10-08T12:00:00Z");
+    app.last_left = app.now;
     app.boot_done = true;
     app
 }
@@ -522,6 +564,56 @@ mod tests {
         for c in s.chars() {
             key(app, KeyCode::Char(c));
         }
+    }
+
+    /// Beta's blocked agent and alpha's agent (made done), changed at `blocked_at` and `done_at`.
+    fn with_changes(blocked_at: &str, done_at: &str) -> App {
+        let mut app = sample_app();
+        for p in &mut app.model.projects {
+            for a in &mut p.agents {
+                if a.pane.agent_status == AgentStatus::Blocked {
+                    a.since = Some(crate::model::testkit::ts(blocked_at));
+                } else {
+                    a.pane.agent_status = AgentStatus::Done;
+                    a.since = Some(crate::model::testkit::ts(done_at));
+                }
+            }
+        }
+        app
+    }
+
+    fn agent(app: &App, status: AgentStatus) -> &AgentRow {
+        app.model
+            .projects
+            .iter()
+            .flat_map(|p| &p.agents)
+            .find(|a| a.pane.agent_status == status)
+            .unwrap()
+    }
+
+    #[test]
+    fn changes_after_you_left_are_new_until_you_leave_again() {
+        let mut app = with_changes("2026-10-08T11:00:00Z", "2026-10-08T11:30:00Z");
+        app.last_left = crate::model::testkit::ts("2026-10-08T11:15:00Z");
+        assert!(!app.is_new(agent(&app, AgentStatus::Blocked)));
+        assert!(app.is_new(agent(&app, AgentStatus::Done)));
+        app.set_looking(true);
+        assert!(app.is_new(agent(&app, AgentStatus::Done)));
+        app.set_looking(false);
+        assert_eq!(app.last_left, app.now);
+        assert!(!app.is_new(agent(&app, AgentStatus::Done)));
+    }
+
+    #[test]
+    fn tab_label_counts_all_blocked_and_new_done() {
+        let mut app = with_changes("2026-10-08T11:00:00Z", "2026-10-08T11:30:00Z");
+        app.model.totals.blocked = 1;
+        app.last_left = crate::model::testkit::ts("2026-10-08T10:00:00Z");
+        assert_eq!(app.tab_label(), "Jarvis ▲1 ✓1");
+        app.last_left = app.now;
+        assert_eq!(app.tab_label(), "Jarvis ▲1");
+        app.model.totals.blocked = 0;
+        assert_eq!(app.tab_label(), "Jarvis");
     }
 
     #[test]

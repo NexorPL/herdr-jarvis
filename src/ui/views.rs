@@ -141,7 +141,13 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                 )),
                 Cell::from(a.pane.pane_id.clone()),
                 Cell::from(a.pane.agent.clone().unwrap_or_default()),
-                Cell::from(theme::truncate(&title, 48)),
+                Cell::from(Line::from(vec![
+                    Span::styled(
+                        if app.is_new(a) { "new " } else { "" },
+                        Style::new().fg(theme::status_color(s, pal)).bold(),
+                    ),
+                    Span::raw(theme::truncate(&title, 48)),
+                ])),
                 Cell::from(theme::ago(a.since, app.now)),
             ];
             if global {
@@ -492,6 +498,15 @@ mod tests {
         assert!(out.contains("w1:p1"));
         assert!(out.contains("workspace  alpha-ws"));
         assert!(out.contains("Parser fix"));
+    }
+
+    #[test]
+    fn new_agents_are_marked() {
+        let mut app = sample_app();
+        app.screen = Screen::Global(Tab::Agents);
+        app.last_left = crate::model::testkit::ts("2000-01-01T00:00:00Z");
+        app.model.projects[0].agents[0].since = Some(app.now);
+        assert!(screen(&app, 140, 30).contains("new title w2:p1"));
     }
 
     #[test]
