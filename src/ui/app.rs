@@ -799,7 +799,10 @@ impl App {
 
     fn on_form_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.form = None,
+            KeyCode::Esc => {
+                self.form = None;
+                self.status = None;
+            }
             KeyCode::Enter => self.submit_form(),
             code => {
                 let Some(form) = self.form.as_mut() else {
@@ -1154,6 +1157,7 @@ mod tests {
         assert_eq!(app.status.as_deref(), Some("an idea needs a name"));
         key(&mut app, KeyCode::Esc);
         assert!(app.form.is_none());
+        assert_eq!(app.status, None);
         assert!(app.ideas.is_empty());
         assert!(matches!(app.screen, Screen::Project { .. }));
     }
