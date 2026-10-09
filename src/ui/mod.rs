@@ -172,6 +172,7 @@ pub fn run() -> anyhow::Result<()> {
     let me = Me {
         pane: my_pane,
         tab: std::env::var("HERDR_TAB_ID").unwrap_or_default(),
+        demo: false,
     };
     let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
     ratatui::restore();
@@ -183,8 +184,6 @@ pub fn demo() -> anyhow::Result<()> {
     let config = Config::default();
     let state = std::env::temp_dir().join("jarvis-demo");
     std::fs::create_dir_all(&state)?;
-    // Enter, p and x fail here instead of reaching a real herdr.
-    std::env::set_var("HERDR_SOCKET_PATH", state.join("no-herdr.sock"));
     let now = chrono::Utc::now();
     let (snap_tx, watch) = mpsc::channel();
     snap_tx.send(WatchMsg::Snapshot(demo::snapshot()))?;
@@ -200,6 +199,7 @@ pub fn demo() -> anyhow::Result<()> {
     let me = Me {
         pane: String::new(),
         tab: String::new(),
+        demo: true,
     };
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &watch, &sources, &me, &state);
@@ -211,6 +211,8 @@ pub fn demo() -> anyhow::Result<()> {
 struct Me {
     pane: String,
     tab: String,
+    /// `jarvis demo`: actions that would reach herdr are dropped.
+    demo: bool,
 }
 
 fn event_loop(
@@ -282,6 +284,15 @@ fn event_loop(
                     app.on_key(key);
                 }
             }
+        }
+        if me.demo
+            && matches!(
+                app.action,
+                Some(Action::FocusPane(_) | Action::Prompt { .. } | Action::Run { .. })
+            )
+        {
+            app.action = None;
+            app.status = Some("demo: nothing is sent to herdr".into());
         }
         match app.action.take() {
             // Jarvis stays open in its own tab; the agent's pane takes the focus.
