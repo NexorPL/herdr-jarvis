@@ -1035,7 +1035,11 @@ mod tests {
         assert_eq!(app.visible_ideas().len(), 2);
         key(&mut app, KeyCode::Char('a'));
         assert!(app.form.is_none());
-        assert!(app.status.as_deref().unwrap().contains("pick a project with f"));
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("pick a project with f"));
         key(&mut app, KeyCode::Char('f'));
         assert_eq!(app.visible_ideas().len(), 1);
         key(&mut app, KeyCode::Char('a'));

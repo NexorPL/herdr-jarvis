@@ -24,7 +24,10 @@ pub fn load(path: &Path) -> Result<Vec<Idea>, String> {
     serde_json::from_str(&text).map_err(|e| {
         let bad = path.with_extension("json.bad");
         let _ = std::fs::copy(path, &bad);
-        format!("ideas file unreadable ({e}); kept a copy in {}", bad.display())
+        format!(
+            "ideas file unreadable ({e}); kept a copy in {}",
+            bad.display()
+        )
     })
 }
 

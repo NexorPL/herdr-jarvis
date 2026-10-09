@@ -1,5 +1,6 @@
 pub mod app;
 pub mod hud;
+pub mod overlays;
 pub mod theme;
 pub mod views;
 
@@ -15,7 +16,6 @@ use crate::{collector, ideas, model, paths};
 use app::{Action, App, Screen, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use std::fs::File;
 use std::io::Write;
@@ -39,6 +39,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Core => hud::draw_core(f, body, app),
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
     }
+    if let Some(form) = &app.form {
+        overlays::idea_form(f, body, app, form);
+    }
     if app.show_help {
         centered(
             f,
@@ -46,9 +49,10 @@ pub fn draw(f: &mut Frame, app: &App) {
             " help ",
             &[
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
-                "        A agents · T threads · L timeline · U usage (all projects)",
-                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-4 views",
+                "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
+                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
                 "        / search · s state filter · w time range · f project filter",
+                "Ideas:  a add · e or Enter edit · d delete",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -57,25 +61,8 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn centered(f: &mut Frame, area: Rect, title: &str, lines: &[&str], app: &App) {
-    let w = 84.min(area.width);
-    let h = (lines.len() as u16 + 2).min(area.height);
-    let rect = Rect::new(
-        area.x + (area.width - w) / 2,
-        area.y + (area.height - h) / 2,
-        w,
-        h,
-    );
-    f.render_widget(Clear, rect);
-    f.render_widget(
-        Paragraph::new(lines.iter().map(|l| Line::from(*l)).collect::<Vec<_>>())
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::bordered()
-                    .title(title.to_string())
-                    .border_style(Style::new().fg(app.palette.accent)),
-            ),
-        rect,
-    );
+    let lines = lines.iter().map(|l| Line::from(l.to_string())).collect();
+    overlays::popup(f, area, title, lines, &app.palette);
 }
 
 #[derive(Default)]
@@ -335,6 +322,28 @@ mod tests {
         let mut app = sample_app();
         app.screen = Screen::Global(Tab::Threads);
         assert!(render(120, 30, |f| draw(f, &app)).contains("Parser fix"));
+    }
+
+    #[test]
+    fn draws_the_idea_form_over_the_view() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Ideas,
+        };
+        app.form = Some(crate::ui::app::IdeaForm {
+            editing: None,
+            project_key: app.model.projects[0].key.clone(),
+            project_name: "beta".into(),
+            name: "Export".into(),
+            description: "usage to CSV".into(),
+            on_description: true,
+        });
+        let out = render(100, 30, |f| draw(f, &app));
+        assert!(out.contains("new idea"));
+        assert!(out.contains("Export"));
+        assert!(out.contains("usage to CSV"));
+        assert!(out.contains("Enter save"));
     }
 
     #[test]

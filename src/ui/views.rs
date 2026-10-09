@@ -1,4 +1,4 @@
-//! The four list tabs, shared by the project drill-down and the global views.
+//! The five list tabs, shared by the project drill-down and the global views.
 
 use super::app::{App, Screen, Tab};
 use super::theme::{self, Palette};
@@ -32,7 +32,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Tab::Threads => threads(f, body, app, pal),
         Tab::Timeline => timeline(f, body, app, pal),
         Tab::Usage => usage(f, body, app, pal),
-        Tab::Ideas => empty(f, body, "no ideas yet", pal),
+        Tab::Ideas => ideas(f, body, app, pal),
     }
     f.render_widget(Paragraph::new(footer_line(app, pal)), footer);
 }
@@ -79,6 +79,9 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
     let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search · s state");
     if app.tab() == Tab::Timeline {
         hint.push_str(" · w range");
+    }
+    if app.tab() == Tab::Ideas {
+        hint.push_str(" · a add · e edit · d delete");
     }
     if matches!(app.screen, Screen::Global(_)) {
         hint.push_str(" · f project");
@@ -377,6 +380,61 @@ fn timeline(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     f.render_stateful_widget(table, area, &mut table_state(app.selected_row));
 }
 
+fn ideas(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
+    let rows = app.visible_ideas();
+    if rows.is_empty() {
+        let msg = if app.search.is_empty() {
+            "no ideas yet · a to add"
+        } else {
+            "no ideas match the search"
+        };
+        return empty(f, area, msg, pal);
+    }
+    let [list, preview] = Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).areas(area);
+    let global = matches!(app.screen, Screen::Global(_));
+    let body: Vec<Row> = rows
+        .iter()
+        .map(|(_, i)| {
+            let mut cells = vec![Cell::from(Span::styled(
+                i.name.clone(),
+                Style::new().bold(),
+            ))];
+            if global {
+                cells.push(Cell::from(Span::styled(
+                    i.project_name.clone(),
+                    Style::new().fg(pal.dim),
+                )));
+            }
+            cells.push(Cell::from(i.description.clone()));
+            Row::new(cells)
+        })
+        .collect();
+    let mut widths = vec![Constraint::Length(28)];
+    let mut header = vec!["idea"];
+    if global {
+        widths.push(Constraint::Length(18));
+        header.push("project");
+    }
+    widths.push(Constraint::Min(10));
+    header.push("description");
+    let table = Table::new(body, widths)
+        .header(Row::new(header).style(Style::new().fg(pal.dim)))
+        .row_highlight_style(Style::new().bg(pal.highlight));
+    f.render_stateful_widget(table, list, &mut table_state(app.selected_row));
+    if let Some((_, i)) = rows.get(app.selected_row) {
+        f.render_widget(
+            Paragraph::new(i.description.clone())
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::new()
+                        .borders(Borders::TOP)
+                        .border_style(Style::new().fg(pal.dim)),
+                ),
+            preview,
+        );
+    }
+}
+
 fn usage(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let days = model::last_days(app.now, 14);
     let scope = app.scope();
@@ -539,6 +597,23 @@ mod tests {
         assert!(out.contains("claude-opus-5-5"));
         assert!(out.contains("2026-10-08"));
         assert!(out.contains("≈$4.00"));
+    }
+
+    #[test]
+    fn ideas_show_name_description_and_project_globally() {
+        let mut app = sample_app();
+        app.ideas = vec![crate::ideas::Idea {
+            project_key: app.model.projects[1].key.clone(),
+            project_name: "alpha".into(),
+            name: "Pricing cache".into(),
+            description: "keep prices for 24h".into(),
+        }];
+        app.screen = Screen::Global(Tab::Ideas);
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("Pricing cache"));
+        assert!(out.contains("alpha"));
+        assert!(out.contains("keep prices for 24h"));
+        assert!(out.contains("a add"));
     }
 
     #[test]
