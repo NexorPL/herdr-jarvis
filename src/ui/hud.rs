@@ -111,6 +111,25 @@ fn node_working(node: &Node, app: &App) -> bool {
     matches!(node, Node::Project(i) if app.model.projects[*i].counts.working > 0)
 }
 
+/// Half the node box (24×4 cells) in canvas units.
+const BOX_HALF: (f64, f64) = (12.0, 4.0);
+
+/// Twigs for `n` running subagents: short lines fanned outward from the node box at (`x`, `y`).
+fn twigs(x: f64, y: f64, n: usize) -> Vec<((f64, f64), (f64, f64))> {
+    let base = y.atan2(x);
+    let spread = 0.35;
+    (0..n)
+        .map(|k| {
+            let a = base + spread * (k as f64 - (n - 1) as f64 / 2.0);
+            let (dx, dy) = (a.cos(), a.sin());
+            // Leave the box where the ray from its center crosses its edge.
+            let edge = (BOX_HALF.0 / dx.abs().max(1e-6)).min(BOX_HALF.1 / dy.abs().max(1e-6));
+            let start = (x + dx * (edge + 1.0), y + dy * (edge + 1.0));
+            (start, (start.0 + dx * 6.0, start.1 + dy * 6.0))
+        })
+        .collect()
+}
+
 fn reactor(f: &mut Frame, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -166,6 +185,32 @@ fn reactor(f: &mut Frame, area: Rect, app: &App) {
                             coords: &[(sx + (x - sx) * t, sy + (y - sy) * t)],
                             color: pal.accent,
                         });
+                    }
+                    let subs = match nodes[i] {
+                        Node::Project(p) => app.running_subagents(&app.model.projects[p]),
+                        Node::More(_) => 0,
+                    };
+                    for (k, ((x1, y1), (x2, y2))) in twigs(x, y, subs).into_iter().enumerate() {
+                        ctx.draw(&CanvasLine {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            color: pal.dim,
+                        });
+                        ctx.draw(&Circle {
+                            x: x2,
+                            y: y2,
+                            radius: 0.6,
+                            color: pal.accent,
+                        });
+                        if full {
+                            let t = ((tick + 9 * k as u64) % 30) as f64 / 30.0;
+                            ctx.draw(&Points {
+                                coords: &[(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)],
+                                color: pal.accent,
+                            });
+                        }
                     }
                 }
             }
@@ -314,13 +359,18 @@ fn node_box(
     f.render_widget(Paragraph::new(body).block(block), rect);
 }
 
-/// Agent counts, plus how many changed to blocked/done since you last left Jarvis.
+/// Agent counts, how many changed to blocked/done since you last left Jarvis, and running subagents.
 fn project_counts(app: &App, p: &crate::model::Project) -> String {
-    let counts = theme::counts(&p.counts);
+    let mut counts = theme::counts(&p.counts);
     match app.new_in(p) {
-        0 => counts,
-        n => format!("{counts} · {n} new"),
+        0 => {}
+        n => counts += &format!(" · {n} new"),
     }
+    match app.running_subagents(p) {
+        0 => {}
+        n => counts += &format!(" · {n} sub"),
+    }
+    counts
 }
 
 fn feed(f: &mut Frame, area: Rect, app: &App) {
@@ -425,6 +475,25 @@ mod tests {
         assert!(core(&app, 100, 30).contains("▲1 · 1 new"));
         app.compact = true;
         assert!(core(&app, 60, 20).contains("▲1 · 1 new"));
+    }
+
+    #[test]
+    fn running_subagents_count_on_their_node() {
+        let mut app = crate::ui::app::with_subagents(sample_app());
+        assert!(core(&app, 100, 30).contains("●1 · 1 sub"));
+        // Silent for 15 minutes: no longer running.
+        app.now += chrono::Duration::minutes(16);
+        assert!(!core(&app, 100, 30).contains("sub"));
+    }
+
+    #[test]
+    fn twigs_leave_the_node_box_outward() {
+        for (x, y) in [(40.0, 0.0), (0.0, 20.0), (-30.0, -15.0)] {
+            for ((x1, y1), (x2, y2)) in twigs(x, y, 3) {
+                assert!((x1 - x).abs() > BOX_HALF.0 || (y1 - y).abs() > BOX_HALF.1);
+                assert!(x2.hypot(y2) > x1.hypot(y1));
+            }
+        }
     }
 
     #[test]

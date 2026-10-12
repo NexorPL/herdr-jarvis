@@ -53,9 +53,11 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
-  is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a feed of
-  the latest events at the bottom.
+  is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a twig
+  out of a project's node for each running Claude Code subagent of its agents (`· N sub` in the node); a
+  feed of the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
+  The side panel of an agent lists the subagents its session spawned, running first.
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
