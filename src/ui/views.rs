@@ -232,6 +232,26 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
             theme::cost(&c)
         )));
     }
+    let subs = app.subagents(a);
+    if !subs.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("subagents", Style::new().fg(pal.dim)));
+        for sub in subs.iter().take(8) {
+            let (glyph, color) = if sub.running(app.now) {
+                ("●", pal.accent)
+            } else {
+                ("✓", pal.dim)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::new().fg(color)),
+                Span::raw(format!("{} ", theme::truncate(&sub.description, 40))),
+                Span::styled(
+                    format!("{} · {}", sub.agent_type, theme::ago(sub.last_ts, app.now)),
+                    Style::new().fg(pal.dim),
+                ),
+            ]));
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::styled("recent", Style::new().fg(pal.dim)));
     for e in app
@@ -595,6 +615,11 @@ mod tests {
         assert!(out.contains("w1:p1"));
         assert!(out.contains("workspace  alpha-ws"));
         assert!(out.contains("Parser fix"));
+        assert!(!out.contains("subagents"));
+        let out = screen(&crate::ui::app::with_subagents(app), 120, 30);
+        assert!(out.contains("subagents"));
+        assert!(out.contains("● Find the lexer Explore"));
+        assert!(out.contains("✓ Old survey"));
     }
 
     #[test]

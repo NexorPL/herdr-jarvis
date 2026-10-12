@@ -8,6 +8,7 @@ use crate::ideas::{Idea, Status as IdeaStatus};
 use crate::model::{AgentRow, EventRow, Model, Project, ThreadRow};
 use crate::pricing::Pricing;
 use crate::run::{self, Layout, Step, Target};
+use crate::transcripts::SubAgent;
 use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -347,6 +348,23 @@ impl App {
             a.pane.agent_status,
             AgentStatus::Blocked | AgentStatus::Done
         ) && a.since.is_some_and(|t| t > self.last_left)
+    }
+
+    /// Subagents of this agent's Claude session, running first.
+    pub fn subagents(&self, a: &AgentRow) -> Vec<&SubAgent> {
+        let mut subs: Vec<&SubAgent> = (a.thread.and_then(|i| self.model.threads.get(i)))
+            .map(|t| t.thread.subagents.iter().collect())
+            .unwrap_or_default();
+        subs.sort_by_key(|s| (!s.running(self.now), std::cmp::Reverse(s.last_ts)));
+        subs
+    }
+
+    /// Running subagents of the project's live agents: the twigs on its core node.
+    pub fn running_subagents(&self, p: &Project) -> usize {
+        (p.agents.iter())
+            .flat_map(|a| self.subagents(a))
+            .filter(|s| s.running(self.now))
+            .count()
     }
 
     pub fn new_in(&self, p: &Project) -> usize {
@@ -1166,6 +1184,25 @@ impl App {
             }
         }
     }
+}
+
+/// Gives alpha's agent (thread "Parser fix") a running and an ended subagent.
+#[cfg(test)]
+pub fn with_subagents(mut app: App) -> App {
+    let now = app.now;
+    let t = (app.model.threads.iter_mut())
+        .find(|t| t.thread.session_id == "sess-a")
+        .unwrap();
+    for (description, ended) in [("Find the lexer", false), ("Old survey", true)] {
+        t.thread.subagents.push(SubAgent {
+            id: description.into(),
+            description: description.into(),
+            agent_type: "Explore".into(),
+            last_ts: Some(now),
+            ended,
+        });
+    }
+    app
 }
 
 #[cfg(test)]

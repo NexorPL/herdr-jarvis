@@ -1,6 +1,6 @@
 //! Incremental index over `~/.claude/projects/<dir>/<session>.jsonl`.
 
-use super::Thread;
+use super::{SubAgent, Thread};
 use crate::pricing::Usage;
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,12 @@ struct FileState {
     last_usage: Option<(String, String, Usage)>,
     #[serde(default)]
     bad_lines: u64,
+    /// The last reply ended its turn; only read for subagents.
+    #[serde(default)]
+    ended: bool,
+    /// Subagent description and type from `agent-<id>.meta.json`.
+    #[serde(default)]
+    meta: Option<(String, String)>,
     thread: Thread,
 }
 
@@ -57,20 +63,32 @@ impl ClaudeSource {
         if self.dirty {
             self.save();
         }
-        // Subagent transcripts only add usage and activity to their parent session.
+        // Subagent transcripts add usage and activity to their parent session, and are listed in it.
         let mut threads: HashMap<String, Thread> = HashMap::new();
         let mut subagents = Vec::new();
         for (path, f) in &self.files {
             if is_subagent(Path::new(path)) {
-                subagents.push(&f.thread);
+                subagents.push((Path::new(path), f));
             } else {
                 threads.insert(f.thread.session_id.clone(), f.thread.clone());
             }
         }
-        for sub in subagents {
+        subagents.sort_by_key(|(_, f)| f.thread.first_ts);
+        for (path, f) in subagents {
+            let sub = &f.thread;
             let Some(t) = threads.get_mut(&sub.session_id) else {
                 continue;
             };
+            let (description, agent_type) = f.meta.clone().unwrap_or_default();
+            t.subagents.push(SubAgent {
+                id: (path.file_stem().map(|s| s.to_string_lossy()))
+                    .map(|s| s.trim_start_matches("agent-").to_string())
+                    .unwrap_or_default(),
+                description,
+                agent_type,
+                last_ts: sub.last_ts,
+                ended: f.ended,
+            });
             t.last_ts = t.last_ts.max(sub.last_ts);
             for (day, models) in &sub.usage {
                 for (model, u) in models {
@@ -134,6 +152,9 @@ impl ClaudeSource {
             .files
             .entry(path.to_string_lossy().to_string())
             .or_insert_with(&fresh);
+        if state.meta.is_none() && is_subagent(path) {
+            state.meta = read_meta(&path.with_extension("meta.json"));
+        }
         if len == state.len {
             return Ok(());
         }
@@ -170,6 +191,12 @@ impl ClaudeSource {
     }
 }
 
+fn read_meta(path: &Path) -> Option<(String, String)> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+    Some((s("description"), s("agentType")))
+}
+
 fn is_subagent(path: &Path) -> bool {
     path.parent()
         .and_then(Path::file_name)
@@ -195,6 +222,7 @@ fn apply_line(state: &mut FileState, line: &str) {
         }
         Some("user") => {
             note_common(t, &v);
+            state.ended = false;
             if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
                 return;
             }
@@ -206,6 +234,7 @@ fn apply_line(state: &mut FileState, line: &str) {
         Some("assistant") => {
             note_common(t, &v);
             let msg = &v["message"];
+            state.ended = msg["stop_reason"] == "end_turn";
             if let Some(text) = reply_text(&msg["content"]) {
                 t.last_reply = Some(snippet(&text));
             }
@@ -449,6 +478,31 @@ mod tests {
         let day = &t.usage[&local_day(ts("2026-10-08T10:00:05Z"))];
         assert_eq!(day["claude-sonnet-5"].input, 5 + 7);
         assert_eq!(day["claude-sonnet-5"].output, 50 + 70);
+        // No meta file and no end_turn: listed, still running.
+        let s = &t.subagents[0];
+        assert_eq!(
+            (s.id.as_str(), s.description.as_str(), s.ended),
+            ("1", "", false)
+        );
+
+        std::fs::write(
+            sub.join("agent-1.meta.json"),
+            r#"{"agentType":"Explore","description":"Find the parser"}"#,
+        )
+        .unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(sub.join("agent-1.jsonl"))
+            .unwrap();
+        writeln!(f, r#"{{"type":"assistant","isSidechain":true,"message":{{"id":"msg_s2","stop_reason":"end_turn","content":[{{"type":"text","text":"done"}}]}},"timestamp":"2026-10-08T10:04:00.000Z"}}"#).unwrap();
+        let t = &src.refresh()[0];
+        let s = &t.subagents[0];
+        assert_eq!(
+            (s.description.as_str(), s.agent_type.as_str()),
+            ("Find the parser", "Explore")
+        );
+        assert!(s.ended);
+        assert_eq!(s.last_ts, Some(ts("2026-10-08T10:04:00Z")));
     }
 
     #[test]

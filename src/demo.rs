@@ -6,7 +6,7 @@ use crate::ideas::{Idea, Status};
 use crate::pricing::Usage;
 use crate::projects::normalize;
 use crate::run::Target;
-use crate::transcripts::Thread;
+use crate::transcripts::{SubAgent, Thread};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 
@@ -86,6 +86,15 @@ const AGENTS: [(&str, &str, &str, &str, &str, i64); 9] = [
     ),
 ];
 
+/// (agent index, description, type, minutes since its last write, ended)
+const SUBAGENTS: [(usize, &str, &str, i64, bool); 5] = [
+    (1, "Find payment retry call sites", "Explore", 0, false),
+    (1, "Review retry backoff", "general-purpose", 1, false),
+    (1, "Write retry tests", "general-purpose", 0, false),
+    (4, "Check links in getting started", "Explore", 2, false),
+    (4, "Survey docs structure", "Explore", 40, true),
+];
+
 const MODELS: [&str; 3] = [
     "claude-opus-5-5",
     "claude-sonnet-5",
@@ -149,6 +158,17 @@ pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
                         },
                     );
             }
+            t.subagents = SUBAGENTS
+                .iter()
+                .filter(|s| s.0 == i)
+                .map(|&(_, description, agent_type, ago, ended)| SubAgent {
+                    id: format!("{i}{description}"),
+                    description: description.into(),
+                    agent_type: agent_type.into(),
+                    last_ts: Some(now - Duration::minutes(ago)),
+                    ended,
+                })
+                .collect();
             t
         })
         .collect()
