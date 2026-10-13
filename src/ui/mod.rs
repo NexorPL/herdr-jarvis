@@ -66,6 +66,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
                 "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
+                "Agents: N new agent (folder, name) · R rename its workspace · o options",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -165,6 +166,11 @@ pub fn run() -> anyhow::Result<()> {
         Ok(list) => app.targets = list,
         Err(e) => errors.push(e),
     }
+    // A one-item list, so it shares the store's backup of an unreadable file.
+    match store::load(&state.join("options.json")) {
+        Ok(list) => app.options = list.into_iter().next().unwrap_or_default(),
+        Err(e) => errors.push(e),
+    }
     if !errors.is_empty() {
         app.status = Some(errors.join(" · "));
     }
@@ -231,7 +237,12 @@ fn event_loop(
     let mut dirty = true;
     let mut screen_read = Instant::now();
     let mut live_read: Option<Instant> = None;
+    // Results of agent starts, which wait for the agent in a thread of their own.
+    let (started_tx, started) = mpsc::channel::<String>();
     while !app.quit {
+        if let Some(msg) = started.try_iter().last() {
+            app.status = Some(msg);
+        }
         // The Live tab shows each agent's screen, read once a second.
         // ponytail: one blocking read per agent on the UI thread; move it to a thread if many
         // agents make the tab stutter.
@@ -337,6 +348,8 @@ fn event_loop(
                         | Action::Prompt { .. }
                         | Action::Input { .. }
                         | Action::Run { .. }
+                        | Action::Spawn { .. }
+                        | Action::RenameWorkspace { .. }
                 )
             )
         {
@@ -390,6 +403,34 @@ fn event_loop(
                     app.status = Some(format!("could not save ideas: {e}"));
                 }
             }
+            Some(Action::SaveOptions) => {
+                let options = [app.options.clone()];
+                if let Err(e) = store::save(&state.join("options.json"), &options) {
+                    app.status = Some(format!("could not save options: {e}"));
+                }
+            }
+            Some(Action::Spawn { agent, cwd, name }) => {
+                app.status = Some(format!("starting {agent} in a new workspace {name}…"));
+                let tx = started_tx.clone();
+                std::thread::spawn(move || {
+                    let msg = match spawn_agent(&agent, &cwd, &name) {
+                        Ok(()) => format!("{agent} started in workspace {name}"),
+                        Err(e) => format!("could not start {agent}: {e}"),
+                    };
+                    let _ = tx.send(msg);
+                });
+            }
+            Some(Action::RenameWorkspace {
+                workspace_id,
+                label,
+            }) => {
+                let params = serde_json::json!({"workspace_id": workspace_id, "label": label});
+                if let Err(e) =
+                    herdr::client::request(&herdr::socket_path(), "workspace.rename", params)
+                {
+                    app.status = Some(format!("could not rename the workspace: {e}"));
+                }
+            }
             Some(Action::SaveTargets) => {
                 if let Err(e) = store::save(&state.join("targets.json"), &app.targets) {
                     app.status = Some(format!("could not save run targets: {e}"));
@@ -414,6 +455,21 @@ fn event_loop(
             None => {}
         }
     }
+    Ok(())
+}
+
+/// A new herdr workspace in `cwd` labelled `name`, with `agent` started in its first pane; herdr
+/// answers once the agent is ready for input.
+fn spawn_agent(agent: &str, cwd: &str, name: &str) -> anyhow::Result<()> {
+    let sock = herdr::socket_path();
+    let params = serde_json::json!({"cwd": cwd, "label": name, "focus": false});
+    let created = herdr::client::request(&sock, "workspace.create", params)?;
+    let pane = created["root_pane"]["pane_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("herdr returned no pane for the new workspace"))?;
+    let params =
+        serde_json::json!({"name": name, "kind": agent, "pane_id": pane, "timeout_ms": 60000});
+    herdr::client::request(&sock, "agent.start", params)?;
     Ok(())
 }
 

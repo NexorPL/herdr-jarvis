@@ -13,7 +13,58 @@ use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Agents herdr can start (`agent.start` kinds).
+pub const AGENT_KINDS: [&str; 24] = [
+    "claude",
+    "codex",
+    "copilot",
+    "pi",
+    "opencode",
+    "gemini",
+    "cursor",
+    "devin",
+    "agy",
+    "cline",
+    "omp",
+    "mastracode",
+    "kimi",
+    "kiro",
+    "droid",
+    "amp",
+    "grok",
+    "hermes",
+    "kilo",
+    "qodercli",
+    "qwen",
+    "letta",
+    "maki",
+    "muse",
+];
+
+/// Settings made in Jarvis (`o`), stored in the state directory.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Options {
+    /// Where a new agent starts when no project is open; empty means the home directory.
+    #[serde(default)]
+    pub default_dir: String,
+    #[serde(default = "default_agent")]
+    pub default_agent: String,
+}
+
+fn default_agent() -> String {
+    "claude".into()
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            default_dir: String::new(),
+            default_agent: default_agent(),
+        }
+    }
+}
 
 /// Boot animation length in 33 ms ticks (~0.8 s).
 pub const BOOT_TICKS: u64 = 24;
@@ -126,6 +177,18 @@ pub enum Action {
         pane_id: String,
         input: Input,
     },
+    /// `options` changed; write them to disk.
+    SaveOptions,
+    /// Start `agent` in a new herdr workspace labelled `name`, in `cwd`.
+    Spawn {
+        agent: String,
+        cwd: String,
+        name: String,
+    },
+    RenameWorkspace {
+        workspace_id: String,
+        label: String,
+    },
     /// Send these steps to herdr, then focus the first new pane.
     Run {
         workspace_id: Option<String>,
@@ -188,6 +251,12 @@ pub enum FormKind {
     Prompt {
         pane_id: String,
         agent: String,
+    },
+    Options,
+    Spawn,
+    /// Rename the herdr workspace of an agent.
+    Rename {
+        workspace_id: String,
     },
 }
 
@@ -308,6 +377,7 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
     pub answer: Option<Answer>,
+    pub options: Options,
     /// Visible screen text per agent pane, for the Live tab.
     pub screens: HashMap<String, String>,
     pub targets: Vec<Target>,
@@ -351,6 +421,7 @@ impl App {
             picker: None,
             answer: None,
             screens: HashMap::new(),
+            options: Options::default(),
             targets: Vec::new(),
         }
     }
@@ -635,6 +706,11 @@ impl App {
             KeyCode::Char('I') => self.goto(Screen::Global(Tab::Ideas)),
             KeyCode::Char('G') => self.goto(Screen::Global(Tab::Live)),
             KeyCode::Char('p') => self.prompt_form(),
+            KeyCode::Char('o') => self.options_form(),
+            KeyCode::Char('N') => self.spawn_form(),
+            KeyCode::Char('R') if self.screen != Screen::Core && self.tab().lists_agents() => {
+                self.rename_form()
+            }
             _ if self.screen == Screen::Core => self.on_core_key(key),
             _ => self.on_list_key(key),
         }
@@ -885,6 +961,63 @@ impl App {
             cursor: usize::MAX,
             error: None,
         });
+    }
+
+    fn open_form(&mut self, title: &str, kind: FormKind, fields: Vec<(&'static str, String)>) {
+        self.form = Some(Form {
+            title: title.into(),
+            kind,
+            fields,
+            focus: 0,
+            cursor: usize::MAX,
+            error: None,
+        });
+    }
+
+    fn options_form(&mut self) {
+        let o = self.options.clone();
+        self.open_form(
+            " options · new agents ",
+            FormKind::Options,
+            vec![("folder", o.default_dir), ("agent", o.default_agent)],
+        );
+    }
+
+    /// A new agent starts in the selected agent's worktree, the open project, the default
+    /// folder from the options, or the home directory, in that order.
+    fn spawn_form(&mut self) {
+        let open = (self.screen != Screen::Core)
+            .then(|| self.run_context())
+            .flatten();
+        let dir = (open.map(|c| c.root))
+            .filter(|r| !r.as_os_str().is_empty())
+            .or_else(|| {
+                Some(PathBuf::from(&self.options.default_dir)).filter(|d| !d.as_os_str().is_empty())
+            })
+            .or_else(crate::paths::home_dir)
+            .unwrap_or_default();
+        let name = (dir.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let dir = dir.to_string_lossy().to_string();
+        let agent = self.options.default_agent.clone();
+        self.open_form(
+            " new agent ",
+            FormKind::Spawn,
+            vec![("agent", agent), ("folder", dir), ("name", name)],
+        );
+    }
+
+    fn rename_form(&mut self) {
+        let Some((_, a)) = self.visible_agents().get(self.selected_row).copied() else {
+            return;
+        };
+        let (workspace_id, label) = (a.pane.workspace_id.clone(), a.workspace.clone());
+        self.open_form(
+            " rename workspace ",
+            FormKind::Rename { workspace_id },
+            vec![("name", label)],
+        );
     }
 
     /// Pane of a target that is already running, found by its herdr label.
@@ -1150,9 +1283,29 @@ impl App {
             FormKind::Idea { .. } => (1, "an idea needs a name"),
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
             FormKind::Prompt { .. } => (1, "type a prompt"),
+            FormKind::Options => (2, "pick a default agent"),
+            FormKind::Spawn => (3, "a new agent needs an agent, a folder and a name"),
+            FormKind::Rename { .. } => (1, "type a name"),
         };
-        if v[..required].iter().any(String::is_empty) {
-            form.error = Some(refusal.into());
+        let (agent, dir) = match form.kind {
+            FormKind::Options => (v[1].as_str(), v[0].as_str()),
+            FormKind::Spawn => (v[0].as_str(), v[1].as_str()),
+            _ => ("", ""),
+        };
+        let refusal = if v[..required].iter().any(String::is_empty) {
+            Some(refusal.to_string())
+        } else if !agent.is_empty() && !AGENT_KINDS.contains(&agent) {
+            Some(format!(
+                "unknown agent; try {}…",
+                AGENT_KINDS[..4].join(", ")
+            ))
+        } else if !dir.is_empty() && !crate::paths::expand_tilde(Path::new(dir)).is_dir() {
+            Some("no such folder".into())
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            form.error = Some(refusal);
             self.form = Some(form);
             return;
         }
@@ -1203,6 +1356,27 @@ impl App {
                     pane_id,
                     agent,
                     text: v[0].clone(),
+                });
+            }
+            FormKind::Options => {
+                self.options = Options {
+                    default_dir: v[0].clone(),
+                    default_agent: v[1].clone(),
+                };
+                self.action = Some(Action::SaveOptions);
+            }
+            FormKind::Spawn => {
+                let cwd = crate::paths::expand_tilde(Path::new(&v[1]));
+                self.action = Some(Action::Spawn {
+                    agent: v[0].clone(),
+                    cwd: cwd.to_string_lossy().to_string(),
+                    name: v[2].clone(),
+                });
+            }
+            FormKind::Rename { workspace_id } => {
+                self.action = Some(Action::RenameWorkspace {
+                    workspace_id,
+                    label: v[0].clone(),
                 });
             }
         }
@@ -2160,5 +2334,91 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(app.picker.is_none());
         assert!(matches!(app.screen, Screen::Project { .. }));
+    }
+
+    fn set_field(app: &mut App, n: usize, value: &str) {
+        app.form.as_mut().unwrap().fields[n].1 = value.into();
+    }
+
+    #[test]
+    fn new_agent_starts_in_the_open_project() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Agents,
+        };
+        key(&mut app, KeyCode::Char('N'));
+        let form = app.form.clone().unwrap();
+        assert_eq!(form.kind, FormKind::Spawn);
+        assert_eq!(form.fields[0].1, "claude");
+        assert!(form.fields[1].1.ends_with("alpha"));
+        assert_eq!(form.fields[2].1, "alpha");
+        // The sample project is not on disk.
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.form.as_ref().unwrap().error.as_deref(),
+            Some("no such folder")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        set_field(&mut app, 1, &dir.path().to_string_lossy());
+        set_field(&mut app, 0, "vim");
+        key(&mut app, KeyCode::Enter);
+        assert!(app
+            .form
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("unknown agent"));
+        set_field(&mut app, 0, "codex");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.action,
+            Some(Action::Spawn {
+                agent: "codex".into(),
+                cwd: dir.path().to_string_lossy().into(),
+                name: "alpha".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn options_set_where_new_agents_start() {
+        let mut app = sample_app();
+        let dir = tempfile::tempdir().unwrap();
+        key(&mut app, KeyCode::Char('o'));
+        set_field(&mut app, 0, &dir.path().to_string_lossy());
+        set_field(&mut app, 1, "pi");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.action.take(), Some(Action::SaveOptions));
+        assert_eq!(app.options.default_agent, "pi");
+        // On the core no project is open: the default folder and agent apply.
+        key(&mut app, KeyCode::Char('N'));
+        let form = app.form.clone().unwrap();
+        assert_eq!(form.fields[0].1, "pi");
+        assert_eq!(form.fields[1].1, dir.path().to_string_lossy());
+    }
+
+    #[test]
+    fn r_renames_the_selected_agents_workspace() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        key(&mut app, KeyCode::Char('R'));
+        assert_eq!(
+            app.form.as_ref().unwrap().kind,
+            FormKind::Rename {
+                workspace_id: "w2".into()
+            }
+        );
+        set_field(&mut app, 0, "payments");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.action,
+            Some(Action::RenameWorkspace {
+                workspace_id: "w2".into(),
+                label: "payments".into(),
+            })
+        );
     }
 }

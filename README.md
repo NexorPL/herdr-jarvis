@@ -80,6 +80,10 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
+- **New agents**: `N` starts an agent (Claude Code, Codex, Copilot CLI, Pi or any other agent herdr
+  knows) in a new herdr workspace: pick the agent, the folder and the workspace name. The folder is the
+  selected agent's worktree or the open project, else the default from the options (`o`), else your
+  home directory. `R` on an agent renames its workspace.
 - **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
   (see below).
 
@@ -108,6 +112,7 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
 | Forms | `Tab` / `Shift+Tab` switch field · `←` `→` `Home` `End` move · `Ctrl+←` `Ctrl+→` by word · `Backspace` / `Delete` · `Ctrl+Backspace` or `Ctrl+W` delete a word · `Enter` save · `Esc` cancel |
 | Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |
+| New agents | `N` new agent in a new workspace · `R` (Agents, Live) rename the agent's workspace · `o` options: default folder and agent |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
 ## Run targets
@@ -117,7 +122,7 @@ agent row, then `n` to add a target with a name, a command and an optional worki
 the project root, or the agent's worktree when it works in one; empty means the root). `e` edits and `d`
 deletes the target under the cursor.
 
-Targets are stored in `targets.json` in the plugin state directory. An environment for a target can be
+Targets are stored in `targets.json` in the plugin state directory (options in `options.json`). An environment for a target can be
 added there by hand:
 
 ```json
