@@ -238,6 +238,24 @@ impl Input {
             _ => None,
         }
     }
+
+    /// A key typed into an agent from its card: text as text, so any character and case arrive as
+    /// typed; keys herdr has no name for go as the terminal's escape sequences.
+    pub fn typed(key: KeyEvent) -> Option<Input> {
+        let text = |s: &str| Some(Input::Text(s.into()));
+        match key.code {
+            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Input::from_key(key)
+            }
+            KeyCode::Char(c) => text(&c.to_string()),
+            KeyCode::Delete => text("\x1b[3~"),
+            KeyCode::Home => text("\x1b[H"),
+            KeyCode::End => text("\x1b[F"),
+            KeyCode::PageUp => text("\x1b[5~"),
+            KeyCode::PageDown => text("\x1b[6~"),
+            _ => Input::from_key(key),
+        }
+    }
 }
 
 /// The answer popup over a blocked agent: its screen, refreshed by the event loop; while open
@@ -391,6 +409,8 @@ pub struct App {
     pub picker: Option<Picker>,
     pub answer: Option<Answer>,
     pub options: Options,
+    /// Pane of the agent whose card takes the keys (Enter on a card); Esc leaves.
+    pub typing: Option<String>,
     /// Columns of the last drawn card grid, so ↑↓ move a row of cards.
     pub grid_cols: std::cell::Cell<usize>,
     /// Visible screen text per agent pane, for the Live tab.
@@ -437,6 +457,7 @@ impl App {
             answer: None,
             screens: HashMap::new(),
             grid_cols: std::cell::Cell::new(1),
+            typing: None,
             options: Options::default(),
             targets: Vec::new(),
         }
@@ -700,6 +721,18 @@ impl App {
             self.on_confirm_key(key);
             return;
         }
+        if let Some(pane_id) = &self.typing {
+            match key.code {
+                KeyCode::Esc => self.typing = None,
+                _ => {
+                    self.action = Input::typed(key).map(|input| Action::Input {
+                        pane_id: pane_id.clone(),
+                        input,
+                    })
+                }
+            }
+            return;
+        }
         if let Some(a) = &self.answer {
             match key.code {
                 KeyCode::Esc => self.answer = None,
@@ -880,6 +913,11 @@ impl App {
                 self.selected_row = (self.selected_row + 1).min(self.row_count().saturating_sub(1))
             }
             KeyCode::Enter => self.activate_row(),
+            KeyCode::Char('g') if self.tab() == Tab::Live => {
+                if let Some((_, a)) = self.visible_agents().get(self.selected_row) {
+                    self.action = Some(Action::FocusPane(a.pane.pane_id.clone()));
+                }
+            }
             KeyCode::Char('/') => self.search_editing = true,
             KeyCode::Char('s') if self.tab().has_state() => {
                 self.state_filter = match self.state_filter {
@@ -964,7 +1002,11 @@ impl App {
     fn activate_row(&mut self) {
         let row = self.selected_row;
         match self.tab() {
-            Tab::Agents | Tab::Live => {
+            // A card takes the keys: type into its agent right there.
+            Tab::Live => {
+                self.typing = (self.visible_agents().get(row)).map(|(_, a)| a.pane.pane_id.clone());
+            }
+            Tab::Agents => {
                 if let Some(id) = self
                     .visible_agents()
                     .get(row)
@@ -1889,8 +1931,42 @@ mod tests {
         key(&mut app, KeyCode::Char('G'));
         assert_eq!(app.screen, Screen::Global(Tab::Live));
         assert_eq!(app.row_count(), app.visible_agents().len());
+        key(&mut app, KeyCode::Char('g'));
+        assert!(matches!(app.action.take(), Some(Action::FocusPane(_))));
+        // Enter types into the selected agent: every key goes to it until Esc.
+        let pane = app.visible_agents()[0].1.pane.pane_id.clone();
         key(&mut app, KeyCode::Enter);
-        assert!(matches!(app.action, Some(Action::FocusPane(_))));
+        assert_eq!(app.typing.as_deref(), Some(pane.as_str()));
+        let sent = |app: &mut App, k: KeyEvent| {
+            app.on_key(k);
+            match app.action.take() {
+                Some(Action::Input { pane_id, input }) if pane_id == pane => input,
+                other => panic!("{other:?}"),
+            }
+        };
+        let k = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Char('A'))),
+            Input::Text("A".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Char('q'))),
+            Input::Text("q".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Enter)),
+            Input::Key("enter".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Delete)),
+            Input::Text("[3~".into())
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(sent(&mut app, ctrl_c), Input::Key("ctrl+c".into()));
+        assert!(!app.quit);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.typing, None);
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
     }
 
     #[test]
@@ -2506,7 +2582,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Panels);
         key(&mut app, KeyCode::Right);
         assert_eq!(app.selected_row, 1);
-        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('g'));
         assert!(matches!(app.action.take(), Some(Action::FocusPane(_))));
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.screen, Screen::Core);

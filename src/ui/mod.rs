@@ -70,6 +70,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
                 "Agents: N new agent (folder, name) · R rename its workspace · o options",
                 "View:   v switch the home screen: animated core or agent panels",
+                "Cards:  Enter type into the agent (Esc stops) · g go to its pane",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -241,6 +242,7 @@ fn event_loop(
     let mut dirty = true;
     let mut screen_read = Instant::now();
     let mut live_read: Option<Instant> = None;
+    let mut typed_read = Instant::now();
     // Results of agent starts, which wait for the agent in a thread of their own.
     let (started_tx, started) = mpsc::channel::<String>();
     while !app.quit {
@@ -276,6 +278,15 @@ fn event_loop(
             }
         } else {
             live_read = None;
+        }
+        // The card you type into follows your keys: read it often and right after each one.
+        if let Some(pane) = app.typing.clone() {
+            if !me.demo && typed_read.elapsed() >= Duration::from_millis(250) {
+                if let Ok(text) = read_screen(&pane, "ansi") {
+                    app.screens.insert(pane, text);
+                }
+                typed_read = Instant::now();
+            }
         }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
@@ -387,6 +398,8 @@ fn event_loop(
                 }
                 // Show the agent's reaction on the next pass.
                 screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                    .unwrap_or_else(Instant::now);
+                typed_read = (Instant::now().checked_sub(Duration::from_millis(200)))
                     .unwrap_or_else(Instant::now);
             }
             Some(Action::Prompt {

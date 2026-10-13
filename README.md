@@ -81,8 +81,10 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
   Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
   subagent its session spawned, running first.
 - **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
-  share the whole screen. `G` shows every project's agents. Enter, `p` and `x` work on the selected
-  card as in the Agents list.
+  share the whole screen, in the agent's own colors. `G` shows every project's agents. `Enter` on a
+  card types into that agent right there: every key goes to it (`Ctrl+C` interrupts it) and the
+  card shows its whole screen until `Esc`. `g` jumps to the agent's pane; `p`, `R` and `x` work as in
+  the Agents list.
 - **Panels**: `v` swaps the core for the cards of every agent, with no tabs; `Esc` or `v` goes back.
   Jarvis opens on the one you used last (also set in the options, `o`).
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
@@ -114,6 +116,7 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 |---|---|
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` `G` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`6` switch views |
+| Live, panels | `Enter` type into the selected agent, `Esc` stops · `g` go to its pane · arrows move between cards |
 | Agents, Live | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |

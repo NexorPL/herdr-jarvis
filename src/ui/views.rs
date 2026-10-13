@@ -98,7 +98,8 @@ pub fn draw_panels(f: &mut Frame, area: Rect, app: &App) {
     live(f, body, app, pal);
     let keys = [
         ("←↑↓→", "select"),
-        ("Enter", "go to agent"),
+        ("Enter", "type into agent"),
+        ("g", "go to agent"),
         ("p", "prompt/answer"),
         ("R", "rename"),
         ("x", "run"),
@@ -113,6 +114,10 @@ pub fn draw_panels(f: &mut Frame, area: Rect, app: &App) {
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
     let tab = app.tab();
     let mut keys = vec![("↑↓", "move"), ("Enter", "open"), ("Tab", "views")];
+    if tab == Tab::Live {
+        keys[1] = ("Enter", "type into agent");
+        keys.push(("g", "go to agent"));
+    }
     if tab.lists_agents() {
         keys.extend([("p", "prompt/answer"), ("R", "rename")]);
     }
@@ -249,8 +254,16 @@ fn card(
         a.pane.agent.as_deref().unwrap_or("agent"),
         a.pane.title()
     );
+    // While you type into it the card shows the whole screen, input box included.
+    let typing = app.typing.as_deref() == Some(a.pane.pane_id.as_str());
+    let title = match typing {
+        true => format!(" ⌨ typing · Esc leaves ·{title}"),
+        false => title,
+    };
     let block = Block::bordered()
-        .border_type(if selected {
+        .border_type(if typing {
+            ratatui::widgets::BorderType::Double
+        } else if selected {
             ratatui::widgets::BorderType::Thick
         } else {
             ratatui::widgets::BorderType::Rounded
@@ -266,7 +279,7 @@ fn card(
         .get(&a.pane.pane_id)
         .map(String::as_str)
         .unwrap_or("");
-    let lines = activity(screen, s == AgentStatus::Blocked);
+    let lines = activity(screen, typing || s == AgentStatus::Blocked);
     let tail = lines[lines.len().saturating_sub(inner)..].to_vec();
     f.render_widget(Paragraph::new(tail).block(block), rect);
 }
