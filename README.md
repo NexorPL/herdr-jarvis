@@ -47,6 +47,22 @@ type = "shell"
 command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 ```
 
+## Update
+
+herdr has no update command; install again to fetch the latest release:
+
+```bash
+herdr plugin install NexorPL/herdr-jarvis
+```
+
+Then stop the old Jarvis processes, the collector and an open overlay, so the new binary takes over
+(on Windows they also keep the old one locked): `pkill jarvis` on Linux and macOS,
+`taskkill /IM jarvis.exe /F` on Windows. Open Jarvis again; it starts a new collector. Your config, ideas
+and run targets live in the plugin config and state directories.
+
+For a linked checkout (`herdr plugin link`): stop the processes the same way, then `git pull` and
+`cargo build --release`.
+
 ## What you see
 
 ![The core with seven projects, the most urgent at the top](docs/images/core.png)
