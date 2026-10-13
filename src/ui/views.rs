@@ -146,9 +146,15 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let [list, side] =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(area);
     let global = matches!(app.screen, Screen::Global(_));
-    let body: Vec<Row> = rows
-        .iter()
-        .map(|(p, a)| {
+    // Each agent row is followed by its subagents (running, or finished in the last 10 minutes);
+    // those rows are not selectable, so the selection maps to the agent rows only.
+    let mut body: Vec<Row> = Vec::new();
+    let mut selected = 0;
+    for (i, (p, a)) in rows.iter().enumerate() {
+        if i == app.selected_row {
+            selected = body.len();
+        }
+        body.push({
             let s = a.pane.agent_status;
             let title = match &a.worktree {
                 Some(_) => format!("⎇ {}", a.pane.title()),
@@ -174,8 +180,41 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                 cells.insert(1, Cell::from(p.name.clone()));
             }
             Row::new(cells)
-        })
-        .collect();
+        });
+        let subs: Vec<_> = (app.subagents(a).into_iter())
+            .filter(|(sub, running)| {
+                *running
+                    || sub
+                        .last_ts
+                        .is_some_and(|t| app.now - t < chrono::Duration::minutes(10))
+            })
+            .collect();
+        for (n, (sub, running)) in subs.iter().enumerate() {
+            let branch = if n + 1 == subs.len() { "└" } else { "├" };
+            let (glyph, color) = if *running {
+                ("●", pal.accent)
+            } else {
+                ("✓", pal.dim)
+            };
+            let mut cells = vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(format!(" {branch} "), Style::new().fg(pal.dim)),
+                    Span::styled(glyph, Style::new().fg(color)),
+                ])),
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    theme::truncate(&sub.agent_type, 8),
+                    Style::new().fg(pal.dim),
+                )),
+                Cell::from(theme::truncate(&sub.description, 48)),
+                Cell::from(theme::ago(sub.last_ts, app.now)),
+            ];
+            if global {
+                cells.insert(1, Cell::from(""));
+            }
+            body.push(Row::new(cells).style(Style::new().fg(pal.dim)));
+        }
+    }
     let mut widths = vec![
         Constraint::Length(10),
         Constraint::Length(8),
@@ -191,7 +230,7 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let table = Table::new(body, widths)
         .header(Row::new(header).style(Style::new().fg(pal.dim)))
         .row_highlight_style(Style::new().bg(pal.highlight));
-    f.render_stateful_widget(table, list, &mut table_state(app.selected_row));
+    f.render_stateful_widget(table, list, &mut table_state(selected));
 
     let Some((_, a)) = rows.get(app.selected_row) else {
         return;
@@ -622,6 +661,9 @@ mod tests {
         assert!(out.contains("subagents"));
         assert!(out.contains("● Find the lexer Explore"));
         assert!(out.contains("✓ Old survey"));
+        // And as tree rows under their agent in the list.
+        assert!(out.contains(" ├ ●") && out.contains("Explore  Find the lexer"));
+        assert!(out.contains(" └ ✓") && out.contains("Explore  Old survey"));
     }
 
     #[test]
