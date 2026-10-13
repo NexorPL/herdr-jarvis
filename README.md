@@ -36,16 +36,21 @@ herdr plugin action invoke jarvis.open
 ```
 
 Jarvis opens in its own tab and stays open; `q` closes it. herdr does not list plugin actions in its
-menus, so for everyday use bind a key in herdr's `config.toml` and reload it (global menu →
-`reload config`). If Jarvis is already open, the same key jumps to its tab instead of starting a second
-one:
+menus and a plugin cannot bind keys itself, so for everyday use bind one in herdr's `config.toml`
+(`%APPDATA%\herdr\config.toml` on Windows, `~/.config/herdr/config.toml` elsewhere) and reload it
+(global menu → `reload config`). If Jarvis is already open, the same key jumps to its tab instead of
+starting a second one:
 
 ```toml
 [[keys.command]]
 key = "ctrl+alt+j"  # prefix+j is taken: it moves to the pane below
-type = "shell"
-command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
+type = "plugin_action"
+command = "jarvis.open"
+description = "open Jarvis"
 ```
+
+The action runs Jarvis's own binary, which talks to herdr's socket, so it also works when the `herdr`
+command is not on `PATH` (herdr started through `npx`, for one). `herdr config check` validates the file.
 
 ## Update
 

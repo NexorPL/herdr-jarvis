@@ -69,6 +69,22 @@ pub fn ensure_collector() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `jarvis open`, the `jarvis.open` action: focus the running Jarvis, or open one in a new tab.
+/// Talks to herdr's socket itself, so it works when no `herdr` is on PATH (herdr run through
+/// npx, for one).
+pub fn open() -> anyhow::Result<()> {
+    let state = paths::state_dir();
+    let socket = herdr::socket_path();
+    if is_running(&state.join("tui.lock")) {
+        let pane = std::fs::read_to_string(state.join("tui.pane")).unwrap_or_default();
+        if !pane.is_empty() && herdr::focus_pane(&socket, &pane).is_ok() {
+            return Ok(());
+        }
+    }
+    let open = json!({"plugin_id": "jarvis", "entrypoint": "core", "focus": true});
+    herdr::client::request(&socket, "plugin.pane.open", open).map(|_| ())
+}
+
 /// herdr restores a session's layout but not plugin processes, so after a restart the "Jarvis" tab
 /// holds a plain shell. Unless a Jarvis is running, replace those leftovers with a live one, in the
 /// same workspace and without taking the focus.

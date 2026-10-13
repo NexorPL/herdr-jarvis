@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
         "demo" => ui::demo(),
         "collect" => collector::run(),
         "ensure-collector" => collector::ensure_running(),
+        "open" => collector::open(),
         "focus" => {
             let pane = args
                 .next()
@@ -34,7 +35,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         other => anyhow::bail!(
-            "unknown command `{other}`; expected tui | demo | collect | ensure-collector | focus <pane>"
+            "unknown command `{other}`; expected tui | open | demo | collect | ensure-collector | focus <pane>"
         ),
     }
 }
