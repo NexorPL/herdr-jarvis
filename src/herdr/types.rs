@@ -63,6 +63,14 @@ pub struct Workspace {
     pub number: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Tab {
+    pub tab_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
@@ -73,6 +81,8 @@ pub struct Snapshot {
     pub focused_pane_id: Option<String>,
     #[serde(default)]
     pub workspaces: Vec<Workspace>,
+    #[serde(default)]
+    pub tabs: Vec<Tab>,
     #[serde(default)]
     pub panes: Vec<Pane>,
     #[serde(default)]
