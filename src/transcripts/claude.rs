@@ -91,7 +91,9 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
         Some("assistant") => {
             note_common(t, v);
             let msg = &v["message"];
-            state.ended = msg["stop_reason"] == "end_turn";
+            // `tool_use` and `pause_turn` continue the turn; any other stop reason ends it.
+            state.ended = (msg["stop_reason"].as_str())
+                .is_some_and(|r| !matches!(r, "tool_use" | "pause_turn"));
             if let Some(text) = msg["content"].as_array().map(|b| super::join_text(b)) {
                 if !text.is_empty() {
                     t.last_reply = Some(super::snippet(&text));

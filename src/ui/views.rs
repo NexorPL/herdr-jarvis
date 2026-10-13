@@ -236,8 +236,8 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     if !subs.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::styled("subagents", Style::new().fg(pal.dim)));
-        for sub in subs.iter().take(8) {
-            let (glyph, color) = if sub.running(app.now) {
+        for (sub, running) in subs.iter().take(8) {
+            let (glyph, color) = if *running {
                 ("●", pal.accent)
             } else {
                 ("✓", pal.dim)

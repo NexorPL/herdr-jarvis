@@ -63,13 +63,17 @@ pub struct SubAgent {
 }
 
 impl SubAgent {
-    /// ponytail: a subagent killed mid-turn never writes its end, so 15 minutes of silence
-    /// counts as stopped; raise it if long tool calls make running subagents disappear.
-    pub fn running(&self, now: DateTime<Utc>) -> bool {
+    /// A subagent that never wrote its end runs while its parent agent is busy (a long tool call or
+    /// a permission prompt can keep it silent), or, for background subagents of an idle parent,
+    /// while it wrote something in the last 15 minutes.
+    /// ponytail: a silent background subagent drops off after 15 minutes; read the parent's
+    /// task notifications if that shows up in practice.
+    pub fn running(&self, now: DateTime<Utc>, parent_busy: bool) -> bool {
         !self.ended
-            && self
-                .last_ts
-                .is_some_and(|t| now - t < chrono::Duration::minutes(15))
+            && (parent_busy
+                || self
+                    .last_ts
+                    .is_some_and(|t| now - t < chrono::Duration::minutes(15)))
     }
 }
 
@@ -458,6 +462,20 @@ mod tests {
         assert_eq!(t("codex").resume_command(), "codex resume s1");
         assert_eq!(t("copilot").resume_command(), "copilot --resume=s1");
         assert_eq!(t("pi").resume_command(), "pi --session s1");
+    }
+
+    #[test]
+    fn subagent_runs_while_its_parent_is_busy() {
+        let now = test_util::ts("2026-10-08T12:00:00Z");
+        let sub = |ago: i64, ended| SubAgent {
+            last_ts: Some(now - chrono::Duration::minutes(ago)),
+            ended,
+            ..Default::default()
+        };
+        assert!(sub(40, false).running(now, true));
+        assert!(!sub(40, false).running(now, false));
+        assert!(sub(5, false).running(now, false));
+        assert!(!sub(0, true).running(now, true));
     }
 
     #[test]

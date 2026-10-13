@@ -350,12 +350,22 @@ impl App {
         ) && a.since.is_some_and(|t| t > self.last_left)
     }
 
-    /// Subagents of this agent's session, running first.
-    pub fn subagents(&self, a: &AgentRow) -> Vec<&SubAgent> {
-        let mut subs: Vec<&SubAgent> = (a.thread.and_then(|i| self.model.threads.get(i)))
-            .map(|t| t.thread.subagents.iter().collect())
+    /// Subagents of this agent's session with whether each still runs, running first.
+    pub fn subagents(&self, a: &AgentRow) -> Vec<(&SubAgent, bool)> {
+        let busy = matches!(
+            a.pane.agent_status,
+            AgentStatus::Working | AgentStatus::Blocked
+        );
+        let mut subs: Vec<(&SubAgent, bool)> = (a.thread.and_then(|i| self.model.threads.get(i)))
+            .map(|t| {
+                t.thread
+                    .subagents
+                    .iter()
+                    .map(|s| (s, s.running(self.now, busy)))
+                    .collect()
+            })
             .unwrap_or_default();
-        subs.sort_by_key(|s| (!s.running(self.now), std::cmp::Reverse(s.last_ts)));
+        subs.sort_by_key(|(s, running)| (!running, std::cmp::Reverse(s.last_ts)));
         subs
     }
 
@@ -363,7 +373,7 @@ impl App {
     pub fn running_subagents(&self, p: &Project) -> usize {
         (p.agents.iter())
             .flat_map(|a| self.subagents(a))
-            .filter(|s| s.running(self.now))
+            .filter(|(_, running)| *running)
             .count()
     }
 

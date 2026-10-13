@@ -481,8 +481,18 @@ mod tests {
     fn running_subagents_count_on_their_node() {
         let mut app = crate::ui::app::with_subagents(sample_app());
         assert!(core(&app, 100, 30).contains("●1 · 1 sub"));
-        // Silent for 15 minutes: no longer running.
+        // Silent for 15 minutes but its parent still works: a long tool call, still running.
         app.now += chrono::Duration::minutes(16);
+        assert!(core(&app, 100, 30).contains("1 sub"));
+        // Parent idle and the subagent silent: no longer running.
+        for a in app
+            .model
+            .projects
+            .iter_mut()
+            .flat_map(|p| p.agents.iter_mut())
+        {
+            a.pane.agent_status = crate::herdr::AgentStatus::Idle;
+        }
         assert!(!core(&app, 100, 30).contains("sub"));
     }
 
