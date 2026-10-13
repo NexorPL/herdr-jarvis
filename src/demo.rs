@@ -217,27 +217,35 @@ pub fn question() -> &'static str {
 "
 }
 
-/// What an agent's screen shows in the Live tab.
+/// What an agent's screen shows in the Live tab, with colors as herdr reads them (`format: ansi`).
 pub fn screen(title: &str, status: AgentStatus) -> String {
+    const DIM: &str = "[38;2;153;153;153m";
+    const OK: &str = "[38;2;78;186;101m";
+    const ORANGE: &str = "[38;2;215;119;87m";
+    const ADD: &str = "[48;2;34;92;43m";
+    const DEL: &str = "[48;2;122;41;54m";
+    const R: &str = "[0m";
     match status {
         AgentStatus::Blocked => question().into(),
         AgentStatus::Working => format!(
-            "> {title}
+            "{DIM}> {title}{R}
 
-● Reading the code around it.
-  ⎿  Read 3 files
+{OK}●{R} Reading the code around it.
+  {DIM}⎿  Read 3 files{R}
 
-● Update(src/lib.rs)
-  ⎿  Updated with 12 additions and 4 removals
+             {OK}●{R} [1mUpdate[22m(src/lib.rs)
+  {DIM}⎿  Updated with 2 additions and 1 removal{R}
+             {DEL}  41 -        retry(1)                {R}
+             {ADD}  41 +        retry(backoff(attempt)) {R}
+             {ADD}  42 +        attempt += 1            {R}
 
-✻ Working… (esc to interrupt)"
+             {ORANGE}✻ Working… {DIM}(esc to interrupt){R}"
         ),
         _ => format!(
-            "> {title}
+            "{DIM}> {title}{R}
 
-● Done. Tests pass.
-
-> "
+{OK}●{R} Done. Tests pass.
+  {DIM}⎿  42 passed in 3.1s{R}"
         ),
     }
 }

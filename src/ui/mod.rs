@@ -1,3 +1,4 @@
+mod ansi;
 pub mod app;
 pub mod hud;
 mod line_edit;
@@ -265,7 +266,7 @@ fn event_loop(
                         let text = if me.demo {
                             demo::screen(&title, status)
                         } else {
-                            read_screen(&pane)
+                            read_screen(&pane, "ansi")
                                 .unwrap_or_else(|e| format!("could not read the agent: {e}"))
                         };
                         (pane, text)
@@ -282,7 +283,7 @@ fn event_loop(
                 a.screen = if me.demo {
                     demo::question().into()
                 } else {
-                    read_screen(&a.pane_id)
+                    read_screen(&a.pane_id, "text")
                         .unwrap_or_else(|e| format!("could not read the agent: {e}"))
                 };
                 screen_read = Instant::now();
@@ -477,8 +478,8 @@ fn spawn_agent(agent: &str, cwd: &str, name: &str) -> anyhow::Result<()> {
 }
 
 /// The visible terminal text of the agent in `pane_id`.
-fn read_screen(pane_id: &str) -> anyhow::Result<String> {
-    let params = serde_json::json!({"target": pane_id, "source": "visible"});
+fn read_screen(pane_id: &str, format: &str) -> anyhow::Result<String> {
+    let params = serde_json::json!({"target": pane_id, "source": "visible", "format": format});
     let result = herdr::client::request(&herdr::socket_path(), "agent.read", params)?;
     Ok(result["read"]["text"]
         .as_str()

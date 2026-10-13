@@ -267,36 +267,39 @@ fn card(
         .map(String::as_str)
         .unwrap_or("");
     let lines = activity(screen, s == AgentStatus::Blocked);
-    let tail = lines[lines.len().saturating_sub(inner)..].join("\n");
-    f.render_widget(
-        Paragraph::new(tail).block(block).style(if selected {
-            Style::new()
-        } else {
-            Style::new().fg(pal.dim)
-        }),
-        rect,
-    );
+    let tail = lines[lines.len().saturating_sub(inner)..].to_vec();
+    f.render_widget(Paragraph::new(tail).block(block), rect);
 }
 
-/// The non-blank lines of an agent screen without its input box and the hints under it, which
-/// take the last lines of every screen. A blocked agent keeps them: its question is down there.
+/// An agent screen in its own colors, without its input box and the hints under it, which take
+/// the last lines of every screen; a blocked agent keeps them, its question is down there.
+/// Blank lines are kept single, like the gaps between the agent's blocks.
 /// ponytail: the input box is found by its horizontal rules in the last six lines; agents that
 /// draw it differently show it in their card.
-fn activity(screen: &str, blocked: bool) -> Vec<&str> {
-    let mut lines: Vec<&str> = (screen.lines().map(str::trim_end))
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+fn activity(screen: &str, blocked: bool) -> Vec<Line<'static>> {
+    let mut lines: Vec<(String, Line<'static>)> = Vec::new();
+    for l in super::ansi::lines(screen) {
+        let text = super::ansi::plain(&l).trim_end().to_string();
+        let blank = text.trim().is_empty();
+        if blank && lines.last().is_none_or(|(t, _)| t.trim().is_empty()) {
+            continue;
+        }
+        lines.push((text, l));
+    }
     let rule = |l: &str| {
         let l = l.trim();
         l.chars().count() > 10 && l.chars().all(|c| "─━═╭╮╰╯│ ".contains(c))
     };
     if !blocked {
         let tail = lines.len().saturating_sub(6);
-        if let Some(cut) = (tail..lines.len()).find(|&i| rule(lines[i])) {
+        if let Some(cut) = (tail..lines.len()).find(|&i| rule(&lines[i].0)) {
             lines.truncate(cut);
         }
     }
-    lines
+    while lines.last().is_some_and(|(t, _)| t.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.into_iter().map(|(_, l)| l).collect()
 }
 
 fn table_state(selected: usize) -> TableState {
@@ -989,9 +992,14 @@ mod tests {
   ⏵⏵ auto mode on
 "
         );
-        assert_eq!(activity(&screen, false), ["● Update(a.rs)", "  ⎿  done"]);
-        assert_eq!(activity(&screen, true).len(), 6);
-        assert_eq!(activity("just text", false), ["just text"]);
+        let plain = |screen: &str, blocked| -> Vec<String> {
+            (activity(screen, blocked).iter())
+                .map(|l| crate::ui::ansi::plain(l).trim_end().to_string())
+                .collect()
+        };
+        assert_eq!(plain(&screen, false), ["● Update(a.rs)", "  ⎿  done"]);
+        assert_eq!(plain(&screen, true).len(), 7);
+        assert_eq!(plain("\n\njust\n\n\ntext\n\n", false), ["just", "", "text"]);
     }
 
     #[test]
