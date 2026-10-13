@@ -67,6 +67,7 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "        Space todo → doing → done · s status filter · c show done",
                 "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
                 "Agents: N new agent (folder, name) · R rename its workspace · o options",
+                "View:   v switch the home screen: animated core or agent panels",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -171,6 +172,7 @@ pub fn run() -> anyhow::Result<()> {
         Ok(list) => app.options = list.into_iter().next().unwrap_or_default(),
         Err(e) => errors.push(e),
     }
+    app.screen = app.home();
     if !errors.is_empty() {
         app.status = Some(errors.join(" · "));
     }

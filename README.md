@@ -75,8 +75,11 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
   Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
   subagent its session spawned, running first.
-- **Live**: a card per agent with the latest lines of its screen, refreshed every second; `G` shows
-  every project's agents. Enter, `p` and `x` work on the selected card as in the Agents list.
+- **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
+  share the whole screen. `G` shows every project's agents. Enter, `p` and `x` work on the selected
+  card as in the Agents list.
+- **View**: `v` switches the home screen between the animated core and the agent panels (the Live
+  cards of every project); Jarvis opens on the one you picked, also set in the options (`o`).
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
@@ -112,7 +115,7 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
 | Forms | `Tab` / `Shift+Tab` switch field · `←` `→` `Home` `End` move · `Ctrl+←` `Ctrl+→` by word · `Backspace` / `Delete` · `Ctrl+Backspace` or `Ctrl+W` delete a word · `Enter` save · `Esc` cancel |
 | Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |
-| New agents | `N` new agent in a new workspace · `R` (Agents, Live) rename the agent's workspace · `o` options: default folder and agent |
+| New agents | `N` new agent in a new workspace · `R` (Agents, Live) rename the agent's workspace · `o` options: default folder, agent and view · `v` core or panels |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
 ## Run targets

@@ -71,10 +71,14 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
             }
         }
     }
-    spans.push(Span::styled(
-        "    Esc = back to core",
-        Style::new().fg(pal.dim),
-    ));
+    let hint = if app.screen == app.home() {
+        "    v = animated core"
+    } else if app.home() == Screen::Core {
+        "    Esc = back to core"
+    } else {
+        "    Esc = back to panels"
+    };
+    spans.push(Span::styled(hint, Style::new().fg(pal.dim)));
     Line::from(spans)
 }
 
@@ -136,67 +140,99 @@ fn empty(f: &mut Frame, area: Rect, msg: &str, pal: &Palette) {
     );
 }
 
-/// One card per agent with the last lines of its screen; as many as fit, scrolled to the selection.
+/// One card per agent with the last lines of its screen. The cards share the whole body: the
+/// column count giving the roomiest cards wins, a short last row stretches, and only when cards
+/// would get smaller than `MIN_W`×`MIN_H` does the grid keep that size and scroll to the selection.
 fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let rows = app.visible_agents();
     if rows.is_empty() {
         return empty(f, area, "no agents here", pal);
     }
-    const CARD_W: u16 = 48;
-    const CARD_H: u16 = 9;
-    let cols = (area.width / CARD_W).max(1) as usize;
-    let fit = (area.height / CARD_H).max(1) as usize;
+    let (cols, fit) = grid(rows.len(), area.width, area.height);
     let first = (app.selected_row / cols).saturating_sub(fit - 1) * cols;
-    let card_w = area.width / cols as u16;
-    for (n, (p, a)) in rows.iter().enumerate().skip(first).take(cols * fit) {
-        let (row, col) = ((n - first) / cols, (n - first) % cols);
-        let rect = Rect {
-            x: area.x + col as u16 * card_w,
-            y: area.y + row as u16 * CARD_H,
-            width: card_w,
-            height: CARD_H.min(area.height),
-        };
-        let s = a.pane.agent_status;
-        let color = theme::status_color(s, pal);
-        let selected = n == app.selected_row;
-        let title = format!(
-            " {} {} · {} · {} ",
-            theme::glyph(s),
-            p.name,
-            a.pane.agent.as_deref().unwrap_or("agent"),
-            a.pane.title()
-        );
-        let block = Block::bordered()
-            .border_type(if selected {
-                ratatui::widgets::BorderType::Thick
-            } else {
-                ratatui::widgets::BorderType::Rounded
-            })
-            .border_style(Style::new().fg(if selected { pal.accent } else { color }))
-            .title(Span::styled(
-                theme::truncate(&title, card_w.saturating_sub(4) as usize),
-                Style::new().fg(color).bold(),
-            ));
-        let inner = (CARD_H - 2) as usize;
-        let screen = app
-            .screens
-            .get(&a.pane.pane_id)
-            .map(String::as_str)
-            .unwrap_or("");
-        let lines = activity(screen, s == AgentStatus::Blocked);
-        let tail = lines[lines.len().saturating_sub(inner)..].join(
-            "
-",
-        );
-        f.render_widget(
-            Paragraph::new(tail).block(block).style(if selected {
-                Style::new()
-            } else {
-                Style::new().fg(pal.dim)
-            }),
-            rect,
-        );
+    let shown = &rows[first..rows.len().min(first + cols * fit)];
+    let row_count = shown.len().div_ceil(cols);
+    let lines =
+        Layout::vertical(vec![Constraint::Ratio(1, row_count as u32); row_count]).split(area);
+    for (r, line) in lines.iter().enumerate() {
+        let cards = &shown[r * cols..shown.len().min((r + 1) * cols)];
+        let cells = Layout::horizontal(vec![Constraint::Ratio(1, cards.len() as u32); cards.len()])
+            .split(*line);
+        for (c, ((p, a), rect)) in cards.iter().zip(cells.iter()).enumerate() {
+            let selected = first + r * cols + c == app.selected_row;
+            card(f, *rect, app, pal, p, a, selected);
+        }
     }
+}
+
+const MIN_W: u16 = 40;
+const MIN_H: u16 = 7;
+
+/// Columns and rows of cards for `n` agents in `w`×`h` cells.
+fn grid(n: usize, w: u16, h: u16) -> (usize, usize) {
+    let max_cols = ((w / MIN_W).max(1) as usize).min(n);
+    let max_rows = (h / MIN_H).max(1) as usize;
+    // Cards about 2.5 times as wide as tall (in cells) read best; take the most room at that shape.
+    let score = |cols: usize| {
+        let rows = n.div_ceil(cols);
+        let (cw, ch) = (w as f64 / cols as f64, h as f64 / rows as f64);
+        // Empty slots in the last row count against a layout.
+        (cw / 2.5).min(ch) * n as f64 / (rows * cols) as f64
+    };
+    match (1..=max_cols)
+        .filter(|c| n.div_ceil(*c) <= max_rows)
+        .max_by(|a, b| score(*a).total_cmp(&score(*b)))
+    {
+        Some(cols) => (cols, n.div_ceil(cols)),
+        None => (max_cols, max_rows),
+    }
+}
+
+fn card(
+    f: &mut Frame,
+    rect: Rect,
+    app: &App,
+    pal: &Palette,
+    p: &model::Project,
+    a: &model::AgentRow,
+    selected: bool,
+) {
+    let s = a.pane.agent_status;
+    let color = theme::status_color(s, pal);
+    let title = format!(
+        " {} {} · {} · {} ",
+        theme::glyph(s),
+        p.name,
+        a.pane.agent.as_deref().unwrap_or("agent"),
+        a.pane.title()
+    );
+    let block = Block::bordered()
+        .border_type(if selected {
+            ratatui::widgets::BorderType::Thick
+        } else {
+            ratatui::widgets::BorderType::Rounded
+        })
+        .border_style(Style::new().fg(if selected { pal.accent } else { color }))
+        .title(Span::styled(
+            theme::truncate(&title, rect.width.saturating_sub(4) as usize),
+            Style::new().fg(color).bold(),
+        ));
+    let inner = rect.height.saturating_sub(2) as usize;
+    let screen = app
+        .screens
+        .get(&a.pane.pane_id)
+        .map(String::as_str)
+        .unwrap_or("");
+    let lines = activity(screen, s == AgentStatus::Blocked);
+    let tail = lines[lines.len().saturating_sub(inner)..].join("\n");
+    f.render_widget(
+        Paragraph::new(tail).block(block).style(if selected {
+            Style::new()
+        } else {
+            Style::new().fg(pal.dim)
+        }),
+        rect,
+    );
 }
 
 /// The non-blank lines of an agent screen without its input box and the hints under it, which
@@ -913,5 +949,17 @@ mod tests {
         assert_eq!(activity(&screen, false), ["● Update(a.rs)", "  ⎿  done"]);
         assert_eq!(activity(&screen, true).len(), 6);
         assert_eq!(activity("just text", false), ["just text"]);
+    }
+
+    #[test]
+    fn cards_fill_the_screen() {
+        // Few agents: big cards, no empty rows.
+        assert_eq!(grid(1, 200, 50), (1, 1));
+        assert_eq!(grid(2, 200, 50), (2, 1));
+        assert_eq!(grid(4, 200, 50), (2, 2));
+        assert_eq!(grid(9, 200, 50), (3, 3));
+        // Too many to fit at the minimum size: as many as fit, the rest scrolls.
+        assert_eq!(grid(40, 200, 50), (5, 7));
+        assert_eq!(grid(3, 30, 5), (1, 1));
     }
 }

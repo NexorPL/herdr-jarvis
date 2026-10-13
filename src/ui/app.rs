@@ -51,10 +51,17 @@ pub struct Options {
     pub default_dir: String,
     #[serde(default = "default_agent")]
     pub default_agent: String,
+    /// The home screen: `core` (the animated core) or `panels` (the Live cards of every agent).
+    #[serde(default = "default_view")]
+    pub view: String,
 }
 
 fn default_agent() -> String {
     "claude".into()
+}
+
+fn default_view() -> String {
+    "core".into()
 }
 
 impl Default for Options {
@@ -62,6 +69,7 @@ impl Default for Options {
         Options {
             default_dir: String::new(),
             default_agent: default_agent(),
+            view: default_view(),
         }
     }
 }
@@ -646,6 +654,14 @@ impl App {
         }
     }
 
+    /// Where Jarvis opens and Esc leads: the core, or the agent panels.
+    pub fn home(&self) -> Screen {
+        match self.options.view.as_str() {
+            "panels" => Screen::Global(Tab::Live),
+            _ => Screen::Core,
+        }
+    }
+
     /// Keeps selections valid after the model changed.
     pub fn clamp(&mut self) {
         self.selected_node = self.selected_node.min(self.node_count().saturating_sub(1));
@@ -707,6 +723,15 @@ impl App {
             KeyCode::Char('G') => self.goto(Screen::Global(Tab::Live)),
             KeyCode::Char('p') => self.prompt_form(),
             KeyCode::Char('o') => self.options_form(),
+            KeyCode::Char('v') => {
+                self.options.view = match self.options.view.as_str() {
+                    "panels" => "core",
+                    _ => "panels",
+                }
+                .into();
+                self.goto(self.home());
+                self.action = Some(Action::SaveOptions);
+            }
             KeyCode::Char('N') => self.spawn_form(),
             KeyCode::Char('R') if self.screen != Screen::Core && self.tab().lists_agents() => {
                 self.rename_form()
@@ -806,7 +831,7 @@ impl App {
         let tab_index = Tab::ALL.iter().position(|t| *t == self.tab()).unwrap_or(0);
         match key.code {
             KeyCode::Esc if !self.search.is_empty() => self.search.clear(),
-            KeyCode::Esc => self.goto(Screen::Core),
+            KeyCode::Esc if self.screen != self.home() => self.goto(self.home()),
             KeyCode::Tab => self.set_tab(Tab::ALL[(tab_index + 1) % Tab::ALL.len()]),
             KeyCode::BackTab => {
                 self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
@@ -979,7 +1004,11 @@ impl App {
         self.open_form(
             " options · new agents ",
             FormKind::Options,
-            vec![("folder", o.default_dir), ("agent", o.default_agent)],
+            vec![
+                ("folder", o.default_dir),
+                ("agent", o.default_agent),
+                ("view", o.view),
+            ],
         );
     }
 
@@ -1283,7 +1312,7 @@ impl App {
             FormKind::Idea { .. } => (1, "an idea needs a name"),
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
             FormKind::Prompt { .. } => (1, "type a prompt"),
-            FormKind::Options => (2, "pick a default agent"),
+            FormKind::Options => (3, "pick a default agent and a view"),
             FormKind::Spawn => (3, "a new agent needs an agent, a folder and a name"),
             FormKind::Rename { .. } => (1, "type a name"),
         };
@@ -1301,6 +1330,8 @@ impl App {
             ))
         } else if !dir.is_empty() && !crate::paths::expand_tilde(Path::new(dir)).is_dir() {
             Some("no such folder".into())
+        } else if form.kind == FormKind::Options && !["core", "panels"].contains(&v[2].as_str()) {
+            Some("view is core or panels".into())
         } else {
             None
         };
@@ -1362,7 +1393,11 @@ impl App {
                 self.options = Options {
                     default_dir: v[0].clone(),
                     default_agent: v[1].clone(),
+                    view: v[2].clone(),
                 };
+                if self.screen == Screen::Core || self.screen == Screen::Global(Tab::Live) {
+                    self.goto(self.home());
+                }
                 self.action = Some(Action::SaveOptions);
             }
             FormKind::Spawn => {
@@ -2420,5 +2455,24 @@ mod tests {
                 label: "payments".into(),
             })
         );
+    }
+
+    #[test]
+    fn v_makes_the_panels_home() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        assert_eq!(app.action.take(), Some(Action::SaveOptions));
+        // Esc leaves a project for the panels, and stays there.
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Agents,
+        };
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.screen, Screen::Core);
     }
 }
