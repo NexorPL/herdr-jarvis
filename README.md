@@ -72,9 +72,12 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
   is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a twig
   out of a project's node for each running subagent of its agents (`· N sub` in the node); a
   feed of the latest events at the bottom.
-- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
-  The side panel of an agent lists the subagents its session spawned, running first.
-- **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
+- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
+  Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
+  subagent its session spawned, running first.
+- **Live**: a card per agent with the latest lines of its screen, refreshed every second; `G` shows
+  every project's agents. Enter, `p` and `x` work on the selected card as in the Agents list.
+- **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
 - **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
@@ -97,9 +100,9 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 
 | Where | Keys |
 |---|---|
-| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
-| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`5` switch views |
-| Agents | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
+| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` `G` all-project views |
+| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`6` switch views |
+| Agents, Live | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |

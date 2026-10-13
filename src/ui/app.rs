@@ -11,6 +11,7 @@ use crate::run::{self, Layout, Step, Target};
 use crate::transcripts::SubAgent;
 use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::path::PathBuf;
 
@@ -24,15 +25,18 @@ pub enum Tab {
     Timeline,
     Usage,
     Ideas,
+    /// The agents as cards showing their screens.
+    Live,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Agents,
         Tab::Threads,
         Tab::Timeline,
         Tab::Usage,
         Tab::Ideas,
+        Tab::Live,
     ];
 
     pub fn title(self) -> &'static str {
@@ -42,12 +46,18 @@ impl Tab {
             Tab::Timeline => "Timeline",
             Tab::Usage => "Usage",
             Tab::Ideas => "Ideas",
+            Tab::Live => "Live",
         }
     }
 
     /// Only agents and timeline events have a state to filter by.
     pub fn has_state(self) -> bool {
-        matches!(self, Tab::Agents | Tab::Timeline)
+        matches!(self, Tab::Agents | Tab::Timeline | Tab::Live)
+    }
+
+    /// A list of agents: Enter, `p` and `x` act on the selected one.
+    pub fn lists_agents(self) -> bool {
+        matches!(self, Tab::Agents | Tab::Live)
     }
 }
 
@@ -298,6 +308,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
     pub answer: Option<Answer>,
+    /// Visible screen text per agent pane, for the Live tab.
+    pub screens: HashMap<String, String>,
     pub targets: Vec<Target>,
 }
 
@@ -338,6 +350,7 @@ impl App {
             confirm: None,
             picker: None,
             answer: None,
+            screens: HashMap::new(),
             targets: Vec::new(),
         }
     }
@@ -546,7 +559,7 @@ impl App {
 
     pub fn row_count(&self) -> usize {
         match self.tab() {
-            Tab::Agents => self.visible_agents().len(),
+            Tab::Agents | Tab::Live => self.visible_agents().len(),
             Tab::Threads => self.visible_threads().len(),
             Tab::Timeline => self.visible_events().len(),
             Tab::Usage => 0,
@@ -620,6 +633,7 @@ impl App {
             KeyCode::Char('L') => self.goto(Screen::Global(Tab::Timeline)),
             KeyCode::Char('U') => self.goto(Screen::Global(Tab::Usage)),
             KeyCode::Char('I') => self.goto(Screen::Global(Tab::Ideas)),
+            KeyCode::Char('G') => self.goto(Screen::Global(Tab::Live)),
             KeyCode::Char('p') => self.prompt_form(),
             _ if self.screen == Screen::Core => self.on_core_key(key),
             _ => self.on_list_key(key),
@@ -721,7 +735,7 @@ impl App {
             KeyCode::BackTab => {
                 self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
             }
-            KeyCode::Char(c @ '1'..='5') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
+            KeyCode::Char(c @ '1'..='6') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_row = self.selected_row.saturating_sub(1)
             }
@@ -813,7 +827,7 @@ impl App {
     fn activate_row(&mut self) {
         let row = self.selected_row;
         match self.tab() {
-            Tab::Agents => {
+            Tab::Agents | Tab::Live => {
                 if let Some(id) = self
                     .visible_agents()
                     .get(row)
@@ -844,7 +858,7 @@ impl App {
     /// The prompt form for the selected agent, or the answer popup when it waits on a question
     /// (herdr refuses prompts then).
     fn prompt_form(&mut self) {
-        let row = (self.screen != Screen::Core && self.tab() == Tab::Agents)
+        let row = (self.screen != Screen::Core && self.tab().lists_agents())
             .then(|| self.visible_agents().get(self.selected_row).copied())
             .flatten();
         let Some((p, a)) = row else {
@@ -882,7 +896,7 @@ impl App {
 
     /// The selected agent (Agents tab) or the open project, with the agent's worktree preferred as root.
     fn run_context(&self) -> Option<RunContext> {
-        let row = if self.tab() == Tab::Agents {
+        let row = if self.tab().lists_agents() {
             self.visible_agents().get(self.selected_row).copied()
         } else {
             None
@@ -1625,14 +1639,26 @@ mod tests {
     }
 
     #[test]
+    fn live_tab_acts_on_agents_like_the_agents_tab() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        assert_eq!(app.row_count(), app.visible_agents().len());
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.action, Some(Action::FocusPane(_))));
+    }
+
+    #[test]
     fn ideas_tab_is_reachable_like_the_others() {
         let mut app = sample_app();
         key(&mut app, KeyCode::Char('I'));
         assert_eq!(app.screen, Screen::Global(Tab::Ideas));
         key(&mut app, KeyCode::Tab);
+        assert_eq!(app.tab(), Tab::Live);
+        key(&mut app, KeyCode::Tab);
         assert_eq!(app.tab(), Tab::Agents);
         key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.tab(), Tab::Ideas);
+        assert_eq!(app.tab(), Tab::Live);
         key(&mut app, KeyCode::Char('1'));
         key(&mut app, KeyCode::Char('5'));
         assert_eq!(app.tab(), Tab::Ideas);

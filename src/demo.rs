@@ -217,6 +217,31 @@ pub fn question() -> &'static str {
 "
 }
 
+/// What an agent's screen shows in the Live tab.
+pub fn screen(title: &str, status: AgentStatus) -> String {
+    match status {
+        AgentStatus::Blocked => question().into(),
+        AgentStatus::Working => format!(
+            "> {title}
+
+● Reading the code around it.
+  ⎿  Read 3 files
+
+● Update(src/lib.rs)
+  ⎿  Updated with 12 additions and 4 removals
+
+✻ Working… (esc to interrupt)"
+        ),
+        _ => format!(
+            "> {title}
+
+● Done. Tests pass.
+
+> "
+        ),
+    }
+}
+
 pub fn ideas() -> Vec<Idea> {
     let idea = |cwd: &str, name: &str, description: &str, status| Idea {
         project_key: normalize(cwd),

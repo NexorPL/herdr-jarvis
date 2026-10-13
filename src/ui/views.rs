@@ -1,7 +1,8 @@
-//! The five list tabs, shared by the project drill-down and the global views.
+//! The list tabs, shared by the project drill-down and the global views.
 
 use super::app::{App, Screen, Tab};
 use super::theme::{self, Palette};
+use crate::herdr::AgentStatus;
 use crate::ideas::Status as IdeaStatus;
 use crate::model::{self, GroupBy, UsageRow};
 use ratatui::prelude::*;
@@ -34,6 +35,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Tab::Timeline => timeline(f, body, app, pal),
         Tab::Usage => usage(f, body, app, pal),
         Tab::Ideas => ideas(f, body, app, pal),
+        Tab::Live => live(f, body, app, pal),
     }
     f.render_widget(Paragraph::new(footer_line(app, pal)), footer);
 }
@@ -87,10 +89,10 @@ fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
     if app.tab() == Tab::Ideas {
         hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
     }
-    if app.tab() == Tab::Agents {
+    if app.tab().lists_agents() {
         hint.push_str(" · p prompt/answer");
     }
-    if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
+    if matches!(app.screen, Screen::Project { .. }) || app.tab().lists_agents() {
         hint.push_str(" · x run");
     }
     if matches!(app.screen, Screen::Global(_)) {
@@ -132,6 +134,90 @@ fn empty(f: &mut Frame, area: Rect, msg: &str, pal: &Palette) {
             .alignment(Alignment::Center),
         area,
     );
+}
+
+/// One card per agent with the last lines of its screen; as many as fit, scrolled to the selection.
+fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
+    let rows = app.visible_agents();
+    if rows.is_empty() {
+        return empty(f, area, "no agents here", pal);
+    }
+    const CARD_W: u16 = 48;
+    const CARD_H: u16 = 9;
+    let cols = (area.width / CARD_W).max(1) as usize;
+    let fit = (area.height / CARD_H).max(1) as usize;
+    let first = (app.selected_row / cols).saturating_sub(fit - 1) * cols;
+    let card_w = area.width / cols as u16;
+    for (n, (p, a)) in rows.iter().enumerate().skip(first).take(cols * fit) {
+        let (row, col) = ((n - first) / cols, (n - first) % cols);
+        let rect = Rect {
+            x: area.x + col as u16 * card_w,
+            y: area.y + row as u16 * CARD_H,
+            width: card_w,
+            height: CARD_H.min(area.height),
+        };
+        let s = a.pane.agent_status;
+        let color = theme::status_color(s, pal);
+        let selected = n == app.selected_row;
+        let title = format!(
+            " {} {} · {} · {} ",
+            theme::glyph(s),
+            p.name,
+            a.pane.agent.as_deref().unwrap_or("agent"),
+            a.pane.title()
+        );
+        let block = Block::bordered()
+            .border_type(if selected {
+                ratatui::widgets::BorderType::Thick
+            } else {
+                ratatui::widgets::BorderType::Rounded
+            })
+            .border_style(Style::new().fg(if selected { pal.accent } else { color }))
+            .title(Span::styled(
+                theme::truncate(&title, card_w.saturating_sub(4) as usize),
+                Style::new().fg(color).bold(),
+            ));
+        let inner = (CARD_H - 2) as usize;
+        let screen = app
+            .screens
+            .get(&a.pane.pane_id)
+            .map(String::as_str)
+            .unwrap_or("");
+        let lines = activity(screen, s == AgentStatus::Blocked);
+        let tail = lines[lines.len().saturating_sub(inner)..].join(
+            "
+",
+        );
+        f.render_widget(
+            Paragraph::new(tail).block(block).style(if selected {
+                Style::new()
+            } else {
+                Style::new().fg(pal.dim)
+            }),
+            rect,
+        );
+    }
+}
+
+/// The non-blank lines of an agent screen without its input box and the hints under it, which
+/// take the last lines of every screen. A blocked agent keeps them: its question is down there.
+/// ponytail: the input box is found by its horizontal rules in the last six lines; agents that
+/// draw it differently show it in their card.
+fn activity(screen: &str, blocked: bool) -> Vec<&str> {
+    let mut lines: Vec<&str> = (screen.lines().map(str::trim_end))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let rule = |l: &str| {
+        let l = l.trim();
+        l.chars().count() > 10 && l.chars().all(|c| "─━═╭╮╰╯│ ".contains(c))
+    };
+    if !blocked {
+        let tail = lines.len().saturating_sub(6);
+        if let Some(cut) = (tail..lines.len()).find(|&i| rule(lines[i])) {
+            lines.truncate(cut);
+        }
+    }
+    lines
 }
 
 fn table_state(selected: usize) -> TableState {
@@ -787,5 +873,45 @@ mod tests {
             screen(&app, 8, 3);
             screen(&app, 1, 1);
         }
+    }
+
+    #[test]
+    fn live_cards_show_each_agent_screen() {
+        let mut app = sample_app();
+        app.screen = Screen::Global(Tab::Live);
+        let pane = app.visible_agents()[0].1.pane.pane_id.clone();
+        app.screens.insert(
+            pane,
+            "old line
+
+> fix it
+● Update(src/lib.rs)
+"
+            .into(),
+        );
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("● Update(src/lib.rs)"));
+        assert!(out.contains("> fix it"));
+        // A card per agent, the selected one with a thick border.
+        assert!(out.contains("┏"));
+        assert_eq!(out.matches("╭").count(), app.visible_agents().len() - 1);
+    }
+
+    #[test]
+    fn activity_drops_the_input_box() {
+        let rule = "─".repeat(40);
+        let screen = format!(
+            "● Update(a.rs)
+  ⎿  done
+
+{rule}
+❯ 
+{rule}
+  ⏵⏵ auto mode on
+"
+        );
+        assert_eq!(activity(&screen, false), ["● Update(a.rs)", "  ⎿  done"]);
+        assert_eq!(activity(&screen, true).len(), 6);
+        assert_eq!(activity("just text", false), ["just text"]);
     }
 }

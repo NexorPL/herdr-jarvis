@@ -7,14 +7,14 @@ pub mod views;
 
 use crate::config::Config;
 use crate::events::{self, Record};
-use crate::herdr::{self, Snapshot, WatchMsg};
+use crate::herdr::{self, AgentStatus, Snapshot, WatchMsg};
 use crate::log::log;
 use crate::pricing::Pricing;
 use crate::projects::Resolver;
 use crate::transcripts::Source;
 use crate::transcripts::Thread;
 use crate::{collector, demo, model, paths, run, store};
-use app::{Action, App, Input, Screen, BOOT_TICKS};
+use app::{Action, App, Input, Screen, Tab, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
@@ -59,9 +59,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             " help ",
             &[
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
-                "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
-                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
-                "        p prompt the selected agent, or answer it when blocked (Agents view)",
+                "        A agents · T threads · L timeline · U usage · I ideas · G live (all projects)",
+                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-6 views",
+                "        p prompt the selected agent, or answer it when blocked (Agents, Live)",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
@@ -230,7 +230,38 @@ fn event_loop(
     let mut resolver = Resolver::default();
     let mut dirty = true;
     let mut screen_read = Instant::now();
+    let mut live_read: Option<Instant> = None;
     while !app.quit {
+        // The Live tab shows each agent's screen, read once a second.
+        // ponytail: one blocking read per agent on the UI thread; move it to a thread if many
+        // agents make the tab stutter.
+        if app.screen != Screen::Core && app.tab() == Tab::Live {
+            if live_read.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                let panes: Vec<(String, String, AgentStatus)> = (app.visible_agents().into_iter())
+                    .map(|(_, a)| {
+                        (
+                            a.pane.pane_id.clone(),
+                            a.pane.title().to_string(),
+                            a.pane.agent_status,
+                        )
+                    })
+                    .collect();
+                app.screens = (panes.into_iter())
+                    .map(|(pane, title, status)| {
+                        let text = if me.demo {
+                            demo::screen(&title, status)
+                        } else {
+                            read_screen(&pane)
+                                .unwrap_or_else(|e| format!("could not read the agent: {e}"))
+                        };
+                        (pane, text)
+                    })
+                    .collect();
+                live_read = Some(Instant::now());
+            }
+        } else {
+            live_read = None;
+        }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
             if a.screen.is_empty() || screen_read.elapsed() >= Duration::from_millis(500) {
