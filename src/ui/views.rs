@@ -191,6 +191,7 @@ fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
         return empty(f, area, "no agents here", pal);
     }
     let (cols, fit) = grid(rows.len(), area.width, area.height);
+    app.grid_cols.set(cols);
     let first = (app.selected_row / cols).saturating_sub(fit - 1) * cols;
     let shown = &rows[first..rows.len().min(first + cols * fit)];
     let row_count = shown.len().div_ceil(cols);

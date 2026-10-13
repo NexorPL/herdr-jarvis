@@ -391,6 +391,8 @@ pub struct App {
     pub picker: Option<Picker>,
     pub answer: Option<Answer>,
     pub options: Options,
+    /// Columns of the last drawn card grid, so ↑↓ move a row of cards.
+    pub grid_cols: std::cell::Cell<usize>,
     /// Visible screen text per agent pane, for the Live tab.
     pub screens: HashMap<String, String>,
     pub targets: Vec<Target>,
@@ -434,6 +436,7 @@ impl App {
             picker: None,
             answer: None,
             screens: HashMap::new(),
+            grid_cols: std::cell::Cell::new(1),
             options: Options::default(),
             targets: Vec::new(),
         }
@@ -847,6 +850,23 @@ impl App {
                 self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
             }
             KeyCode::Char(c @ '1'..='6') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
+            // Cards: a row up or down; the last card when the row below is shorter.
+            KeyCode::Up | KeyCode::Char('k') if self.tab() == Tab::Live => {
+                let cols = self.grid_cols.get().max(1);
+                self.selected_row = self
+                    .selected_row
+                    .checked_sub(cols)
+                    .unwrap_or(self.selected_row)
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.tab() == Tab::Live => {
+                let (cols, last) = (
+                    self.grid_cols.get().max(1),
+                    self.row_count().saturating_sub(1),
+                );
+                if self.selected_row / cols < last / cols {
+                    self.selected_row = (self.selected_row + cols).min(last)
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_row = self.selected_row.saturating_sub(1)
             }
@@ -2499,5 +2519,35 @@ mod tests {
         };
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.screen, Screen::Core);
+    }
+
+    #[test]
+    fn arrows_move_through_the_card_grid() {
+        let mut app = sample_app();
+        // Five agents in two columns: rows [0 1] [2 3] [4].
+        let extra = app.model.projects[0].agents[0].clone();
+        for i in 0..3 {
+            let mut a = extra.clone();
+            a.pane.pane_id = format!("w9:p{i}");
+            app.model.projects[0].agents.push(a);
+        }
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.row_count(), 5);
+        app.grid_cols.set(2);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 2);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_row, 0);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_row, 0);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.selected_row, 1);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 3);
+        // The row below holds only card 4: down lands on it, and stops there.
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 4);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 4);
     }
 }
