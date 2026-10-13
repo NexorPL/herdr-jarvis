@@ -8,7 +8,7 @@ pub mod views;
 
 use crate::config::Config;
 use crate::events::{self, Record};
-use crate::herdr::{self, AgentStatus, Snapshot, WatchMsg};
+use crate::herdr::{self, Snapshot, WatchMsg};
 use crate::log::log;
 use crate::pricing::Pricing;
 use crate::projects::Resolver;
@@ -22,7 +22,9 @@ use ratatui::DefaultTerminal;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -241,52 +243,42 @@ fn event_loop(
     let mut resolver = Resolver::default();
     let mut dirty = true;
     let mut screen_read = Instant::now();
-    let mut live_read: Option<Instant> = None;
-    let mut typed_read = Instant::now();
-    // Results of agent starts, which wait for the agent in a thread of their own.
+    // Results of agent starts and failed keys, which run in threads of their own.
     let (started_tx, started) = mpsc::channel::<String>();
+    let read_plan = Arc::new(Mutex::new(ReadPlan::default()));
+    let typed = Arc::new(AtomicBool::new(false));
+    let screens = match me.demo {
+        true => mpsc::channel().1,
+        false => spawn_reader(read_plan.clone(), typed.clone()),
+    };
+    let keys = spawn_sender(started_tx.clone(), typed.clone());
     while !app.quit {
         if let Some(msg) = started.try_iter().last() {
             app.status = Some(msg);
         }
-        // The Live tab shows each agent's screen, read once a second.
-        // ponytail: one blocking read per agent on the UI thread; move it to a thread if many
-        // agents make the tab stutter.
-        if app.screen != Screen::Core && app.tab() == Tab::Live {
-            if live_read.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
-                let panes: Vec<(String, String, AgentStatus)> = (app.visible_agents().into_iter())
+        // Cards show each agent's screen. herdr is read off the UI thread, so typing never waits
+        // on it; the demo makes its screens up.
+        let live = app.screen != Screen::Core && app.tab() == Tab::Live;
+        if me.demo {
+            if live && app.screens.is_empty() {
+                app.screens = (app.visible_agents().into_iter())
                     .map(|(_, a)| {
-                        (
-                            a.pane.pane_id.clone(),
-                            a.pane.title().to_string(),
-                            a.pane.agent_status,
-                        )
+                        let text = demo::screen(a.pane.title(), a.pane.agent_status);
+                        (a.pane.pane_id.clone(), text)
                     })
                     .collect();
-                app.screens = (panes.into_iter())
-                    .map(|(pane, title, status)| {
-                        let text = if me.demo {
-                            demo::screen(&title, status)
-                        } else {
-                            read_screen(&pane, "ansi")
-                                .unwrap_or_else(|e| format!("could not read the agent: {e}"))
-                        };
-                        (pane, text)
-                    })
-                    .collect();
-                live_read = Some(Instant::now());
             }
         } else {
-            live_read = None;
-        }
-        // The card you type into follows your keys: read it often and right after each one.
-        if let Some(pane) = app.typing.clone() {
-            if !me.demo && typed_read.elapsed() >= Duration::from_millis(250) {
-                if let Ok(text) = read_screen(&pane, "ansi") {
-                    app.screens.insert(pane, text);
-                }
-                typed_read = Instant::now();
+            if let Ok(mut plan) = read_plan.lock() {
+                plan.live = match live {
+                    true => (app.visible_agents().into_iter())
+                        .map(|(_, a)| a.pane.pane_id.clone())
+                        .collect(),
+                    false => Vec::new(),
+                };
+                plan.typing = app.typing.clone();
             }
+            app.screens.extend(screens.try_iter());
         }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
@@ -347,11 +339,28 @@ fn event_loop(
         let size = terminal.size()?;
         app.compact = size.width < 90 || size.height < 28;
         terminal.draw(|f| draw(f, app))?;
-        let timeout = Duration::from_millis(if app.animating() { 33 } else { 250 });
+        // Typing into a card redraws as fast as animating, so its screen follows the keys.
+        let fast = app.animating() || app.typing.is_some();
+        let timeout = Duration::from_millis(if fast { 33 } else { 250 });
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key);
+            // Every key already waiting is handled before the next draw; keys typed into an agent
+            // go straight to the sender thread, other actions are handled below one at a time.
+            loop {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        app.on_key(key);
+                    }
+                }
+                if !me.demo {
+                    if let Some(Action::Input { pane_id, input }) = app.action.take() {
+                        let _ = keys.send((pane_id, input));
+                        // The answer popup shows the agent's reaction on the next pass.
+                        screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                            .unwrap_or_else(Instant::now);
+                    }
+                }
+                if app.action.is_some() || app.quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
             }
         }
@@ -379,29 +388,8 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
-            Some(Action::Input { pane_id, input }) => {
-                let sock = herdr::socket_path();
-                let sent = match input {
-                    Input::Key(k) => herdr::client::request(
-                        &sock,
-                        "agent.send_keys",
-                        serde_json::json!({"target": pane_id, "keys": [k]}),
-                    ),
-                    Input::Text(t) => herdr::client::request(
-                        &sock,
-                        "pane.send_text",
-                        serde_json::json!({"pane_id": pane_id, "text": t}),
-                    ),
-                };
-                if let Err(e) = sent {
-                    app.status = Some(format!("could not type into the agent: {e}"));
-                }
-                // Show the agent's reaction on the next pass.
-                screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
-                    .unwrap_or_else(Instant::now);
-                typed_read = (Instant::now().checked_sub(Duration::from_millis(200)))
-                    .unwrap_or_else(Instant::now);
-            }
+            // Only in the demo, which drops it above; elsewhere the sender thread has it.
+            Some(Action::Input { .. }) => {}
             Some(Action::Prompt {
                 pane_id,
                 agent,
@@ -473,6 +461,99 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+/// Which agent screens the reader thread keeps fresh.
+#[derive(Default)]
+struct ReadPlan {
+    /// The cards on screen, read once a second.
+    live: Vec<String>,
+    /// The card being typed into, read every 80 ms and right after keys go out.
+    typing: Option<String>,
+}
+
+fn spawn_reader(plan: Arc<Mutex<ReadPlan>>, typed: Arc<AtomicBool>) -> Receiver<(String, String)> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut all_read, mut typing_read) =
+            (Instant::now() - Duration::from_secs(5), Instant::now());
+        loop {
+            std::thread::sleep(Duration::from_millis(40));
+            let (live, typing) = match plan.lock() {
+                Ok(p) => (p.live.clone(), p.typing.clone()),
+                Err(_) => return,
+            };
+            let read = |pane: &str| {
+                let text = read_screen(pane, "ansi")
+                    .unwrap_or_else(|e| format!("could not read the agent: {e}"));
+                tx.send((pane.to_string(), text)).is_ok()
+            };
+            if let Some(pane) = &typing {
+                if typed.swap(false, Ordering::Relaxed)
+                    || typing_read.elapsed() >= Duration::from_millis(80)
+                {
+                    if !read(pane) {
+                        return;
+                    }
+                    typing_read = Instant::now();
+                }
+            }
+            if !live.is_empty() && all_read.elapsed() >= Duration::from_secs(1) {
+                for pane in live.iter().filter(|p| Some(*p) != typing.as_ref()) {
+                    if !read(pane) {
+                        return;
+                    }
+                }
+                all_read = Instant::now();
+            }
+        }
+    });
+    rx
+}
+
+/// Sends keys to agents in order; text typed in a burst goes out as one `pane.send_text`.
+fn spawn_sender(
+    status: mpsc::Sender<String>,
+    typed: Arc<AtomicBool>,
+) -> mpsc::Sender<(String, Input)> {
+    let (tx, rx) = mpsc::channel::<(String, Input)>();
+    std::thread::spawn(move || {
+        let sock = herdr::socket_path();
+        while let Ok(first) = rx.recv() {
+            let batch = coalesce(std::iter::once(first).chain(rx.try_iter()));
+            for (pane_id, input) in batch {
+                let sent = match input {
+                    Input::Key(k) => herdr::client::request(
+                        &sock,
+                        "agent.send_keys",
+                        serde_json::json!({"target": pane_id, "keys": [k]}),
+                    ),
+                    Input::Text(t) => herdr::client::request(
+                        &sock,
+                        "pane.send_text",
+                        serde_json::json!({"pane_id": pane_id, "text": t}),
+                    ),
+                };
+                if let Err(e) = sent {
+                    let _ = status.send(format!("could not type into the agent: {e}"));
+                }
+            }
+            typed.store(true, Ordering::Relaxed);
+        }
+    });
+    tx
+}
+
+/// Consecutive text for the same pane joined into one input.
+fn coalesce(inputs: impl Iterator<Item = (String, Input)>) -> Vec<(String, Input)> {
+    let mut batch: Vec<(String, Input)> = Vec::new();
+    for (pane, input) in inputs {
+        match (batch.last_mut(), &input) {
+            (Some((p, Input::Text(t))), Input::Text(more)) if *p == pane => t.push_str(more),
+            _ => batch.push((pane, input)),
+        }
+    }
+    batch
 }
 
 /// A new herdr workspace in `cwd` labelled `name`, with `agent` started in its first pane; herdr
@@ -705,5 +786,26 @@ mod tests {
         assert!(first.collector_running);
         let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(second.threads.len(), 1);
+    }
+
+    #[test]
+    fn typed_text_goes_out_in_one_piece() {
+        let t = |p: &str, s: &str| (p.to_string(), Input::Text(s.into()));
+        let k = |p: &str, s: &str| (p.to_string(), Input::Key(s.into()));
+        let got = coalesce(
+            [
+                t("a", "h"),
+                t("a", "i"),
+                k("a", "enter"),
+                t("a", "x"),
+                t("b", "y"),
+                t("b", "z"),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            got,
+            [t("a", "hi"), k("a", "enter"), t("a", "x"), t("b", "yz")]
+        );
     }
 }
