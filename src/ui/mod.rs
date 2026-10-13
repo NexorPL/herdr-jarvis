@@ -39,6 +39,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.screen {
         Screen::Core => hud::draw_core(f, body, app),
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
+        Screen::Panels => views::draw_panels(f, body, app),
     }
     if let Some(p) = &app.picker {
         overlays::picker(f, body, app, p);

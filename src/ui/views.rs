@@ -71,14 +71,10 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
             }
         }
     }
-    let hint = if app.screen == app.home() {
-        "    v = animated core"
-    } else if app.home() == Screen::Core {
-        "    Esc = back to core"
-    } else {
-        "    Esc = back to panels"
-    };
-    spans.push(Span::styled(hint, Style::new().fg(pal.dim)));
+    spans.push(Span::styled(
+        "    Esc = back to core",
+        Style::new().fg(pal.dim),
+    ));
     Line::from(spans)
 }
 
@@ -93,6 +89,25 @@ pub fn key_bar(keys: &[(&str, &str)], pal: &Palette) -> Vec<Span<'static>> {
         spans.push(Span::styled(format!(" {what} "), Style::new().fg(pal.dim)));
     }
     spans
+}
+
+/// The panels screen: every agent's card and the keys, nothing else.
+pub fn draw_panels(f: &mut Frame, area: Rect, app: &App) {
+    let pal = &app.palette;
+    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    live(f, body, app, pal);
+    let keys = [
+        ("←↑↓→", "select"),
+        ("Enter", "go to agent"),
+        ("p", "prompt/answer"),
+        ("R", "rename"),
+        ("x", "run"),
+        ("N", "new agent"),
+        ("o", "options"),
+        ("Esc v", "core"),
+        ("?", "help"),
+    ];
+    f.render_widget(Paragraph::new(Line::from(key_bar(&keys, pal))), footer);
 }
 
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {

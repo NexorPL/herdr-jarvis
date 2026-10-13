@@ -78,8 +78,8 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 - **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
   share the whole screen. `G` shows every project's agents. Enter, `p` and `x` work on the selected
   card as in the Agents list.
-- **View**: `v` switches the home screen between the animated core and the agent panels (the Live
-  cards of every project); Jarvis opens on the one you picked, also set in the options (`o`).
+- **Panels**: `v` swaps the core for the cards of every agent, with no tabs; `Esc` or `v` goes back.
+  Jarvis opens on the one you used last (also set in the options, `o`).
 - **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.

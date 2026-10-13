@@ -123,8 +123,13 @@ impl Tab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
     Core,
-    Project { key: String, tab: Tab },
+    Project {
+        key: String,
+        tab: Tab,
+    },
     Global(Tab),
+    /// Only the Live cards of every agent, no tabs (`v`).
+    Panels,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,6 +540,7 @@ impl App {
         match &self.screen {
             Screen::Project { tab, .. } | Screen::Global(tab) => *tab,
             Screen::Core => Tab::Agents,
+            Screen::Panels => Tab::Live,
         }
     }
 
@@ -543,7 +549,7 @@ impl App {
         match &self.screen {
             Screen::Project { key, .. } => Some(key),
             Screen::Global(_) => self.project_filter.as_deref(),
-            Screen::Core => None,
+            Screen::Core | Screen::Panels => None,
         }
     }
 
@@ -654,10 +660,10 @@ impl App {
         }
     }
 
-    /// Where Jarvis opens and Esc leads: the core, or the agent panels.
+    /// Where Jarvis opens: the core, or the agent panels.
     pub fn home(&self) -> Screen {
         match self.options.view.as_str() {
-            "panels" => Screen::Global(Tab::Live),
+            "panels" => Screen::Panels,
             _ => Screen::Core,
         }
     }
@@ -723,15 +729,8 @@ impl App {
             KeyCode::Char('G') => self.goto(Screen::Global(Tab::Live)),
             KeyCode::Char('p') => self.prompt_form(),
             KeyCode::Char('o') => self.options_form(),
-            KeyCode::Char('v') => {
-                self.options.view = match self.options.view.as_str() {
-                    "panels" => "core",
-                    _ => "panels",
-                }
-                .into();
-                self.goto(self.home());
-                self.action = Some(Action::SaveOptions);
-            }
+            KeyCode::Char('v') => self.switch_view(),
+            KeyCode::Esc if self.screen == Screen::Panels => self.switch_view(),
             KeyCode::Char('N') => self.spawn_form(),
             KeyCode::Char('R') if self.screen != Screen::Core && self.tab().lists_agents() => {
                 self.rename_form()
@@ -818,11 +817,22 @@ impl App {
         }
     }
 
+    /// Between the core and the panels; Jarvis opens on the last one.
+    fn switch_view(&mut self) {
+        self.options.view = match self.screen {
+            Screen::Panels => "core",
+            _ => "panels",
+        }
+        .into();
+        self.goto(self.home());
+        self.action = Some(Action::SaveOptions);
+    }
+
     fn set_tab(&mut self, tab: Tab) {
         match &mut self.screen {
             Screen::Project { tab: t, .. } => *t = tab,
             Screen::Global(t) => *t = tab,
-            Screen::Core => {}
+            Screen::Core | Screen::Panels => return,
         }
         self.selected_row = 0;
     }
@@ -831,7 +841,7 @@ impl App {
         let tab_index = Tab::ALL.iter().position(|t| *t == self.tab()).unwrap_or(0);
         match key.code {
             KeyCode::Esc if !self.search.is_empty() => self.search.clear(),
-            KeyCode::Esc if self.screen != self.home() => self.goto(self.home()),
+            KeyCode::Esc => self.goto(Screen::Core),
             KeyCode::Tab => self.set_tab(Tab::ALL[(tab_index + 1) % Tab::ALL.len()]),
             KeyCode::BackTab => {
                 self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
@@ -839,6 +849,12 @@ impl App {
             KeyCode::Char(c @ '1'..='6') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_row = self.selected_row.saturating_sub(1)
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.tab() == Tab::Live => {
+                self.selected_row = self.selected_row.saturating_sub(1)
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.tab() == Tab::Live => {
+                self.selected_row = (self.selected_row + 1).min(self.row_count().saturating_sub(1))
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.selected_row = (self.selected_row + 1).min(self.row_count().saturating_sub(1))
@@ -1395,7 +1411,7 @@ impl App {
                     default_agent: v[1].clone(),
                     view: v[2].clone(),
                 };
-                if self.screen == Screen::Core || self.screen == Screen::Global(Tab::Live) {
+                if matches!(self.screen, Screen::Core | Screen::Panels) {
                     self.goto(self.home());
                 }
                 self.action = Some(Action::SaveOptions);
@@ -2458,21 +2474,30 @@ mod tests {
     }
 
     #[test]
-    fn v_makes_the_panels_home() {
+    fn v_and_esc_switch_between_core_and_panels() {
         let mut app = sample_app();
         key(&mut app, KeyCode::Char('v'));
-        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        assert_eq!(app.screen, Screen::Panels);
         assert_eq!(app.action.take(), Some(Action::SaveOptions));
-        // Esc leaves a project for the panels, and stays there.
+        assert_eq!(app.home(), Screen::Panels);
+        // No tabs here.
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.screen, Screen::Panels);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.selected_row, 1);
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(app.action.take(), Some(Action::FocusPane(_))));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Core);
+        assert_eq!(app.home(), Screen::Core);
+        // A project's Esc leads to the core, as before.
+        key(&mut app, KeyCode::Char('v'));
         app.screen = Screen::Project {
             key: app.model.projects[0].key.clone(),
             tab: Tab::Agents,
         };
         key(&mut app, KeyCode::Esc);
-        assert_eq!(app.screen, Screen::Global(Tab::Live));
-        key(&mut app, KeyCode::Esc);
-        assert_eq!(app.screen, Screen::Global(Tab::Live));
-        key(&mut app, KeyCode::Char('v'));
         assert_eq!(app.screen, Screen::Core);
     }
 }
