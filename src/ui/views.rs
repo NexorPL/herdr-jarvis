@@ -82,28 +82,55 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Keys as a bar: each key in the accent color, its action dimmed.
+pub fn key_bar(keys: &[(&str, &str)], pal: &Palette) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (k, what) in keys {
+        spans.push(Span::styled(
+            format!(" {k}"),
+            Style::new().fg(pal.accent).bold(),
+        ));
+        spans.push(Span::styled(format!(" {what} "), Style::new().fg(pal.dim)));
+    }
+    spans
+}
+
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
-    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search");
-    if app.tab().has_state() {
-        hint.push_str(" · s state");
+    let tab = app.tab();
+    let mut keys = vec![("↑↓", "move"), ("Enter", "open"), ("Tab", "views")];
+    if tab.lists_agents() {
+        keys.extend([("p", "prompt/answer"), ("R", "rename")]);
     }
-    if app.tab() == Tab::Timeline {
-        hint.push_str(" · w range");
+    if matches!(app.screen, Screen::Project { .. }) || tab.lists_agents() {
+        keys.push(("x", "run"));
     }
-    if app.tab() == Tab::Ideas {
-        hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
+    if tab == Tab::Ideas {
+        keys.extend([
+            ("a", "add"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("Space", "status"),
+            ("s", "filter"),
+            ("c", "done"),
+        ]);
     }
-    if app.tab().lists_agents() {
-        hint.push_str(" · p prompt/answer");
+    keys.push(("/", "search"));
+    if tab.has_state() {
+        keys.push(("s", "state"));
     }
-    if matches!(app.screen, Screen::Project { .. }) || app.tab().lists_agents() {
-        hint.push_str(" · x run");
+    if tab == Tab::Timeline {
+        keys.push(("w", "range"));
     }
     if matches!(app.screen, Screen::Global(_)) {
-        hint.push_str(" · f project");
+        keys.push(("f", "project"));
     }
-    hint.push_str(" · ? help");
-    let mut spans = vec![Span::styled(hint, Style::new().fg(pal.dim))];
+    keys.extend([
+        ("N", "new agent"),
+        ("o", "options"),
+        ("v", "view"),
+        ("?", "help"),
+    ]);
+    let mut spans = key_bar(&keys, pal);
     if app.search_editing || !app.search.is_empty() {
         spans.push(Span::styled(
             format!("   /{}", app.search),

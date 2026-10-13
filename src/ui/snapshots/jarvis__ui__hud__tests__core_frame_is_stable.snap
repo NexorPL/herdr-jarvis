@@ -1,5 +1,6 @@
 ---
 source: src/ui/hud.rs
+assertion_line: 531
 expression: "core(&app, 100, 30)"
 ---
                                                                                                     
@@ -12,17 +13,16 @@ expression: "core(&app, 100, 30)"
                                                   ⡇                                                 
                                                   ⡇                                                 
                                                   ⡇                                                 
-                                                  ⡇                                                 
-                                              ⣀ ⠐⠒⠂⠐⠤⡄                                              
-                                            ⣀⠈⢁ ⠒⠋ ⠐⢦⡀⠰⡄                                            
-                                           ⠠⠃⠰⠋⢀⡴⣒⣒⢦⡀ ⡄ ⡀                                           
-                                           ⢰ ⣄ ⢸⢸⡁⢈⡇⡇ ⠹ ⠇                                           
-                                         ⣀⡠⠌ ⠘ ⠈⠳⠭⠭⠞⠁⣠⠆⢠⠢⢄⣀                                         
-                                   ⣀⡠⠤⠒⠊⠉   ⠘⠆⠈⠳⠄ ⣠⠤ ⢁⡀⠉   ⠉⠑⠒⠤⢄⣀                                   
-                            ⢀⣀⠤⠤⠒⠊⠉           ⠘⠒⠄ ⠤⠄ ⠉           ⠉⠑⠒⠤⠤⣀⡀                            
-       ╭3 gamma───────────────╮                                      ╭2 alpha───────────────╮       
-       │no agents             │               2 active               │●1                    │       
-       │— ·                   │                                      │10m · title w1:p1     │       
+                                                ⢀⣀⡃                                                 
+                                             ⢠⠔ ⣈⣀ ⢈⠙⠂⣀                                             
+                                            ⡴ ⡴ ⢀⣀⣀⡈⠙⠂⠈⠂                                            
+                                           ⢀⠁⠈⠁⢰⢫⠖⠲⡝⡆ ⡇⠐⡆                                           
+                                           ⠸⠄⢸ ⠸⣜⠦⠴⣣⠇⢀⡁⢀⠁                                           
+                                     ⢀⣀⠤⠤⠒⠊⠁⠠⡀⠠⣄⡈⠉⠉⠁ ⠞ ⠞⠈⠑⠒⠤⠤⣀⡀                                     
+                               ⣀⡠⠤⠔⠒⠉⠁       ⠉⠠⣄⡁ ⠉⡉ ⠔⠃       ⠈⠉⠒⠢⠤⢄⣀                               
+       ╭3 gamma───────────────╮                   ⠉⠁                 ╭2 alpha───────────────╮       
+       │no agents             │                                      │●1                    │       
+       │— ·                   │               2 active               │10m · title w1:p1     │       
        ╰──────────────────────╯                                      ╰──────────────────────╯       
                                                                                                     
                                                                                                     
@@ -31,4 +31,5 @@ expression: "core(&app, 100, 30)"
                                                                                                     
                                                                                                     
                                                                                                     
- ▸ no events yet
+ ▸ no events yet                                                                                    
+ ←↑↓→ select  Enter open  N new agent  o options  v panels  A T L U I G all-project views  ? help  q
