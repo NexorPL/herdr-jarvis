@@ -111,7 +111,7 @@ pub fn snapshot() -> Snapshot {
             json!({
                 "pane_id": format!("{ws}:p{i}"), "workspace_id": ws, "tab_id": format!("{ws}:t1"),
                 "cwd": cwd, "agent": agent, "agent_status": status, "terminal_title_stripped": title,
-                "agent_session": (*agent == "claude").then(|| json!({"value": format!("demo-{i}")})),
+                "agent_session": (*agent != "opencode").then(|| json!({"value": format!("demo-{i}")})),
             })
         })
         .collect();
@@ -125,13 +125,14 @@ pub fn snapshot() -> Snapshot {
     .expect("demo snapshot")
 }
 
-/// One Claude thread per Claude agent, with a week of usage.
+/// One thread per Claude or Codex agent, with a week of usage.
 pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
     (AGENTS.iter().enumerate())
-        .filter(|(_, a)| a.2 == "claude")
-        .map(|(i, (_, cwd, _, _, title, ago))| {
+        .filter(|(_, a)| a.2 != "opencode")
+        .map(|(i, (_, cwd, agent, _, title, ago))| {
             let mut t = Thread {
                 session_id: format!("demo-{i}"),
+                agent: agent.to_string(),
                 title: Some(title.to_string()),
                 cwd: Some(cwd.to_string()),
                 branch: Some("main".into()),
@@ -143,12 +144,16 @@ pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
             for day in 0..7u64 {
                 let k = (i as u64 + 1) * (7 - day);
                 t.usage
-                    .entry(crate::transcripts::claude::local_day(
+                    .entry(crate::transcripts::local_day(
                         now - Duration::days(day as i64),
                     ))
                     .or_default()
                     .insert(
-                        MODELS[(i + day as usize) % 3].into(),
+                        match *agent {
+                            "codex" => "gpt-5.5-codex",
+                            _ => MODELS[(i + day as usize) % 3],
+                        }
+                        .into(),
                         Usage {
                             input: 9_000 * k,
                             output: 14_000 * k,
@@ -281,10 +286,10 @@ mod tests {
             &records(now),
             &crate::pricing::Pricing::new(Default::default()),
             &mut crate::projects::Resolver::default(),
-            &crate::transcripts::claude::local_day(now),
+            &crate::transcripts::local_day(now),
         );
         assert_eq!(m.projects.len(), 7);
         assert_eq!(m.projects[0].name, "shop");
-        assert!(m.totals.blocked == 1 && m.threads.len() == 6);
+        assert!(m.totals.blocked == 1 && m.threads.len() == 8);
     }
 }

@@ -11,7 +11,7 @@ use crate::herdr::{self, Snapshot, WatchMsg};
 use crate::log::log;
 use crate::pricing::Pricing;
 use crate::projects::Resolver;
-use crate::transcripts::claude::ClaudeSource;
+use crate::transcripts::Source;
 use crate::transcripts::Thread;
 use crate::{collector, demo, model, paths, run, store};
 use app::{Action, App, Input, Screen, BOOT_TICKS};
@@ -87,7 +87,7 @@ struct SourceUpdate {
 
 /// Transcripts and the event log are read off the UI thread, so a large first index never blocks drawing.
 fn spawn_sources(
-    mut claude: Option<ClaudeSource>,
+    mut sources: Vec<Source>,
     store: events::Log,
     lock: PathBuf,
 ) -> Receiver<SourceUpdate> {
@@ -106,7 +106,7 @@ fn spawn_sources(
             return;
         }
         loop {
-            let threads = claude.as_mut().map(|c| c.refresh()).unwrap_or_default();
+            let threads = sources.iter_mut().flat_map(Source::refresh).collect();
             if tx.send(read(threads)).is_err() {
                 return;
             }
@@ -150,11 +150,8 @@ pub fn run() -> anyhow::Result<()> {
         }
     };
     let watch = herdr::watcher::spawn(herdr::socket_path());
-    let claude = config
-        .claude_dir()
-        .map(|dir| ClaudeSource::new(&dir, state.join("claude-index-v2.json")));
     let sources = spawn_sources(
-        claude,
+        crate::transcripts::sources(config.claude_dir(), &state),
         events::Log::new(state.clone()),
         state.join("collector.lock"),
     );
@@ -589,9 +586,13 @@ mod tests {
         .unwrap();
         let lock = tmp.path().join("collector.lock");
         let _held = collector::try_lock(&lock).unwrap();
-        let claude = ClaudeSource::new(&tmp.path().join("claude"), tmp.path().join("index.json"));
+        let claude = Source::new(
+            crate::transcripts::Kind::Claude,
+            &tmp.path().join("claude"),
+            tmp.path().join("index.json"),
+        );
         let rx = spawn_sources(
-            Some(claude),
+            vec![claude],
             events::Log::new(tmp.path().to_path_buf()),
             lock,
         );

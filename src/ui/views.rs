@@ -281,7 +281,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let rows = app.visible_threads();
     if rows.is_empty() {
         let msg = if app.search.is_empty() {
-            "no Claude Code threads"
+            "no agent threads"
         } else {
             "no threads match the search"
         };
@@ -303,6 +303,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                     t.thread.title.as_deref().unwrap_or("(untitled)"),
                     44,
                 )),
+                Cell::from(t.thread.agent.clone()),
                 Cell::from(t.project_name.clone()),
                 Cell::from(t.thread.branch.clone().unwrap_or_default()),
                 Cell::from(theme::ago(t.thread.last_ts, app.now)),
@@ -315,6 +316,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let widths = [
         Constraint::Length(11),
         Constraint::Min(16),
+        Constraint::Length(7),
         Constraint::Length(18),
         Constraint::Length(14),
         Constraint::Length(5),
@@ -325,7 +327,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let table = Table::new(body, widths)
         .header(
             Row::new(vec![
-                "", "title", "project", "branch", "last", "turns", "tokens", "cost",
+                "", "title", "agent", "project", "branch", "last", "turns", "tokens", "cost",
             ])
             .style(Style::new().fg(pal.dim)),
         )
@@ -504,7 +506,7 @@ fn usage(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
         GroupBy::Day,
     );
     if daily.is_empty() {
-        return empty(f, area, "no Claude Code usage in the last 14 days", pal);
+        return empty(f, area, "no agent usage in the last 14 days", pal);
     }
     let by_cost = |mut rows: Vec<UsageRow>| {
         rows.sort_by(|a, b| b.cost.usd.total_cmp(&a.cost.usd));

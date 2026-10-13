@@ -350,7 +350,7 @@ impl App {
         ) && a.since.is_some_and(|t| t > self.last_left)
     }
 
-    /// Subagents of this agent's Claude session, running first.
+    /// Subagents of this agent's session, running first.
     pub fn subagents(&self, a: &AgentRow) -> Vec<&SubAgent> {
         let mut subs: Vec<&SubAgent> = (a.thread.and_then(|i| self.model.threads.get(i)))
             .map(|t| t.thread.subagents.iter().collect())
@@ -446,7 +446,7 @@ impl App {
     }
 
     pub fn today(&self) -> String {
-        crate::transcripts::claude::local_day(self.now)
+        crate::transcripts::local_day(self.now)
     }
 
     pub fn project_name(&self, key: &str) -> String {
@@ -816,11 +816,10 @@ impl App {
                 let target = self
                     .visible_threads()
                     .get(row)
-                    .map(|t| (t.live_pane.clone(), t.thread.session_id.clone()));
+                    .map(|t| (t.live_pane.clone(), t.thread.resume_command()));
                 match target {
                     Some((Some(pane), _)) => self.action = Some(Action::FocusPane(pane)),
-                    Some((None, session)) => {
-                        let cmd = format!("claude --resume {session}");
+                    Some((None, cmd)) => {
                         self.status = Some(format!("{cmd}  (copied)"));
                         self.action = Some(Action::Copy(cmd));
                     }

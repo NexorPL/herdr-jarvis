@@ -542,7 +542,7 @@ mod tests {
         let now = ts("2026-10-08T12:00:00Z");
         let days = last_days(now, 3);
         assert_eq!(days.len(), 3);
-        assert_eq!(days[2], crate::transcripts::claude::local_day(now));
+        assert_eq!(days[2], crate::transcripts::local_day(now));
         assert!(days[0] < days[1]);
     }
 

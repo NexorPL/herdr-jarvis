@@ -11,8 +11,8 @@
 
 **Mission control for [herdr](https://herdr.dev).** One keypress opens Jarvis in its own tab, and it stays
 open while you work. Its animated core: every project with herdr activity branches out of it, showing which agents are working,
-which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
-event timeline and token cost.
+which are done and which are blocked on you. Drill into a project for its agents, their threads (Claude Code, Codex,
+Copilot CLI, Pi), event timeline and token cost.
 
 ![Jarvis: the core, a project's agents and a prompt sent from Jarvis](docs/images/jarvis.gif)
 
@@ -70,7 +70,7 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
   is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a twig
-  out of a project's node for each running Claude Code subagent of its agents (`· N sub` in the node); a
+  out of a project's node for each running subagent of its agents (`· N sub` in the node); a
   feed of the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
   The side panel of an agent lists the subagents its session spawned, running first.
@@ -80,16 +80,25 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 - **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
   (see below).
 
-Projects are grouped by git repository; linked worktrees sit under their main repository. Threads and
-usage come from Claude Code transcripts (`~/.claude/projects`); other agents appear in the tree and the
-timeline, without threads or cost.
+Projects are grouped by git repository; linked worktrees sit under their main repository. Threads,
+subagents and usage come from the session files each agent writes:
+
+| Agent | Sessions | Moved by |
+|---|---|---|
+| Claude Code | `~/.claude/projects` | `claude_dir`, `CLAUDE_CONFIG_DIR` |
+| Codex | `~/.codex/sessions` | `CODEX_HOME` |
+| GitHub Copilot CLI | `~/.copilot/session-state` | `COPILOT_HOME` |
+| Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR` |
+
+Copilot CLI records token counts only when a session exits, so a running Copilot session shows its
+usage once it closes. Other agents appear in the tree and the timeline, without threads or cost.
 
 ## Keys
 
 | Where | Keys |
 |---|---|
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
-| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
+| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`5` switch views |
 | Agents | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
@@ -136,14 +145,15 @@ cache_write_5m = 5.0
 cache_write_1h = 8.0
 ```
 
-Costs are estimates from public per-token prices, shown with `≈`.
+Costs are estimates from public per-token prices, shown with `≈`. The built-in table covers Claude
+models; add others (Codex's GPT models, say) under `[pricing."<model>"]`, or their cost shows as `?`.
 
 ## How it works
 
 `jarvis collect` starts with herdr (detached, single instance) and records agent state changes to
 daily JSONL files in the plugin state directory, so the timeline covers time when the overlay was
 closed. herdr restores a session's layout but not plugin processes, so on startup Jarvis also replaces
-the restored, empty "Jarvis" tab with a live one (without taking the focus). Jarvis reads herdr's socket API, an incremental index of Claude Code transcripts and those
+the restored, empty "Jarvis" tab with a live one (without taking the focus). Jarvis reads herdr's socket API, an incremental index of the agents' session files and those
 files. Nothing leaves your machine.
 
 ## Development
