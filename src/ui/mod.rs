@@ -351,13 +351,10 @@ fn event_loop(
                         app.on_key(key);
                     }
                 }
-                if !me.demo {
-                    if let Some(Action::Input { pane_id, input }) = app.action.take() {
-                        let _ = keys.send((pane_id, input));
-                        // The answer popup shows the agent's reaction on the next pass.
-                        screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
-                            .unwrap_or_else(Instant::now);
-                    }
+                if !me.demo && send_typed(&mut app.action, &keys) {
+                    // The answer popup shows the agent's reaction on the next pass.
+                    screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                        .unwrap_or_else(Instant::now);
                 }
                 if app.action.is_some() || app.quit || !event::poll(Duration::ZERO)? {
                     break;
@@ -542,6 +539,20 @@ fn spawn_sender(
         }
     });
     tx
+}
+
+/// Hands a key typed into an agent to the sender thread; any other action stays for the loop.
+fn send_typed(action: &mut Option<Action>, keys: &mpsc::Sender<(String, Input)>) -> bool {
+    match action.take() {
+        Some(Action::Input { pane_id, input }) => {
+            let _ = keys.send((pane_id, input));
+            true
+        }
+        other => {
+            *action = other;
+            false
+        }
+    }
 }
 
 /// Consecutive text for the same pane joined into one input.
@@ -807,5 +818,27 @@ mod tests {
             got,
             [t("a", "hi"), k("a", "enter"), t("a", "x"), t("b", "yz")]
         );
+    }
+
+    #[test]
+    fn only_typed_keys_leave_for_the_sender() {
+        let (tx, rx) = mpsc::channel();
+        let mut action = Some(Action::Prompt {
+            pane_id: "w1:p1".into(),
+            agent: "a".into(),
+            text: "go".into(),
+        });
+        assert!(!send_typed(&mut action, &tx));
+        assert!(
+            matches!(action, Some(Action::Prompt { .. })),
+            "the prompt stays for the loop"
+        );
+        let mut action = Some(Action::Input {
+            pane_id: "w1:p1".into(),
+            input: Input::Text("x".into()),
+        });
+        assert!(send_typed(&mut action, &tx));
+        assert_eq!(action, None);
+        assert_eq!(rx.try_recv().unwrap().1, Input::Text("x".into()));
     }
 }
