@@ -264,7 +264,7 @@ fn event_loop(
                 app.screens = (app.visible_agents().into_iter())
                     .map(|(_, a)| {
                         let text = demo::screen(a.pane.title(), a.pane.agent_status);
-                        (a.pane.pane_id.clone(), text)
+                        (a.pane.pane_id.clone(), ansi::lines(&text))
                     })
                     .collect();
             }
@@ -278,7 +278,11 @@ fn event_loop(
                 };
                 plan.typing = app.typing.clone();
             }
-            app.screens.extend(screens.try_iter());
+            app.screens.extend(
+                screens
+                    .try_iter()
+                    .map(|(pane, text)| (pane, ansi::lines(&text))),
+            );
         }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
@@ -325,6 +329,16 @@ fn event_loop(
             );
             app.clamp();
             dirty = false;
+            // Forget the screens of closed panes, and stop typing into one.
+            let open: std::collections::HashSet<&str> = (app.model.projects.iter())
+                .flat_map(|p| &p.agents)
+                .map(|a| a.pane.pane_id.as_str())
+                .collect();
+            app.screens.retain(|pane, _| open.contains(pane.as_str()));
+            if app.typing.as_deref().is_some_and(|p| !open.contains(p)) {
+                app.typing = None;
+                app.status = Some("the agent you were typing into is gone".into());
+            }
         }
         app.set_looking(snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
         let label = app.tab_label();
@@ -351,13 +365,10 @@ fn event_loop(
                         app.on_key(key);
                     }
                 }
-                if !me.demo {
-                    if let Some(Action::Input { pane_id, input }) = app.action.take() {
-                        let _ = keys.send((pane_id, input));
-                        // The answer popup shows the agent's reaction on the next pass.
-                        screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
-                            .unwrap_or_else(Instant::now);
-                    }
+                if !me.demo && send_typed(&mut app.action, &keys) {
+                    // The answer popup shows the agent's reaction on the next pass.
+                    screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                        .unwrap_or_else(Instant::now);
                 }
                 if app.action.is_some() || app.quit || !event::poll(Duration::ZERO)? {
                     break;
@@ -503,6 +514,15 @@ fn spawn_reader(plan: Arc<Mutex<ReadPlan>>, typed: Arc<AtomicBool>) -> Receiver<
                     if !read(pane) {
                         return;
                     }
+                    // Keys typed meanwhile show without waiting for the rest of the cards.
+                    if let Some(t) = typing
+                        .as_deref()
+                        .filter(|_| typed.swap(false, Ordering::Relaxed))
+                    {
+                        if !read(t) {
+                            return;
+                        }
+                    }
                 }
                 all_read = Instant::now();
             }
@@ -542,6 +562,20 @@ fn spawn_sender(
         }
     });
     tx
+}
+
+/// Hands a key typed into an agent to the sender thread; any other action stays for the loop.
+fn send_typed(action: &mut Option<Action>, keys: &mpsc::Sender<(String, Input)>) -> bool {
+    match action.take() {
+        Some(Action::Input { pane_id, input }) => {
+            let _ = keys.send((pane_id, input));
+            true
+        }
+        other => {
+            *action = other;
+            false
+        }
+    }
 }
 
 /// Consecutive text for the same pane joined into one input.
@@ -807,5 +841,27 @@ mod tests {
             got,
             [t("a", "hi"), k("a", "enter"), t("a", "x"), t("b", "yz")]
         );
+    }
+
+    #[test]
+    fn only_typed_keys_leave_for_the_sender() {
+        let (tx, rx) = mpsc::channel();
+        let mut action = Some(Action::Prompt {
+            pane_id: "w1:p1".into(),
+            agent: "a".into(),
+            text: "go".into(),
+        });
+        assert!(!send_typed(&mut action, &tx));
+        assert!(
+            matches!(action, Some(Action::Prompt { .. })),
+            "the prompt stays for the loop"
+        );
+        let mut action = Some(Action::Input {
+            pane_id: "w1:p1".into(),
+            input: Input::Text("x".into()),
+        });
+        assert!(send_typed(&mut action, &tx));
+        assert_eq!(action, None);
+        assert_eq!(rx.try_recv().unwrap().1, Input::Text("x".into()));
     }
 }
