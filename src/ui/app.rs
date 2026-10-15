@@ -414,7 +414,7 @@ pub struct App {
     /// Columns of the last drawn card grid, so ↑↓ move a row of cards.
     pub grid_cols: std::cell::Cell<usize>,
     /// Visible screen text per agent pane, for the Live tab.
-    pub screens: HashMap<String, String>,
+    pub screens: HashMap<String, Vec<ratatui::text::Line<'static>>>,
     pub targets: Vec<Target>,
 }
 
@@ -1390,7 +1390,7 @@ impl App {
             FormKind::Idea { .. } => (1, "an idea needs a name"),
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
             FormKind::Prompt { .. } => (1, "type a prompt"),
-            FormKind::Options => (3, "pick a default agent and a view"),
+            FormKind::Options => (0, ""),
             FormKind::Spawn => (3, "a new agent needs an agent, a folder and a name"),
             FormKind::Rename { .. } => (1, "type a name"),
         };
@@ -1401,6 +1401,8 @@ impl App {
         };
         let refusal = if v[..required].iter().any(String::is_empty) {
             Some(refusal.to_string())
+        } else if form.kind == FormKind::Options && agent.is_empty() {
+            Some("pick a default agent".into())
         } else if !agent.is_empty() && !AGENT_KINDS.contains(&agent) {
             Some(format!(
                 "unknown agent; try {}…",
@@ -2534,6 +2536,11 @@ mod tests {
     fn options_set_where_new_agents_start() {
         let mut app = sample_app();
         let dir = tempfile::tempdir().unwrap();
+        // The defaults save as they are: no folder means the home directory.
+        key(&mut app, KeyCode::Char('o'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.form, None);
+        assert_eq!(app.action.take(), Some(Action::SaveOptions));
         key(&mut app, KeyCode::Char('o'));
         set_field(&mut app, 0, &dir.path().to_string_lossy());
         set_field(&mut app, 1, "pi");

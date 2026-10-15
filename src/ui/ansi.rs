@@ -19,10 +19,24 @@ fn line(text: &str, style: &mut Style) -> Line<'static> {
             run.push(c);
             continue;
         }
-        if chars.peek() != Some(&'[') {
-            continue;
+        match chars.next() {
+            Some('[') => {}
+            // OSC (titles, hyperlinks): up to BEL or ESC \; their text is not screen text.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            // Charset and line-size selections take one more character.
+            Some('(' | ')' | '*' | '+' | '#' | '%') => {
+                chars.next();
+                continue;
+            }
+            _ => continue,
         }
-        chars.next();
         let mut params = String::new();
         let mut last = None;
         for c in chars.by_ref() {
@@ -46,9 +60,23 @@ fn line(text: &str, style: &mut Style) -> Line<'static> {
 }
 
 fn sgr(mut style: Style, params: &str) -> Style {
-    let mut n = params
-        .split([';', ':'])
-        .map(|p| p.parse::<u16>().unwrap_or(0));
+    // Colon sub-parameters (38:2::r:g:b, 38:5:n, 4:3) in the ';' form the loop below reads.
+    let num = |p: &str| p.parse::<u16>().unwrap_or(0);
+    let mut flat: Vec<u16> = Vec::new();
+    for group in params.split(';') {
+        let sub: Vec<&str> = group.split(':').collect();
+        match (num(sub[0]), sub.len()) {
+            (_, 1) => flat.push(num(group)),
+            (c @ (38 | 48), _) if sub[1] == "2" && sub.len() >= 5 => {
+                flat.extend([c, 2]);
+                flat.extend(sub[sub.len() - 3..].iter().map(|p| num(p)));
+            }
+            (c @ (38 | 48), _) if sub[1] == "5" => flat.extend([c, 5, num(sub[2])]),
+            (4, _) => flat.push(if sub[1] == "0" { 24 } else { 4 }),
+            (c, _) => flat.push(c),
+        }
+    }
+    let mut n = flat.into_iter();
     while let Some(p) = n.next() {
         style = match p {
             0 => Style::new(),
@@ -117,5 +145,21 @@ mod tests {
         assert_eq!(l[1].spans[0].style.bg, Some(Color::Indexed(22)));
         assert_eq!(plain(&l[1]), " still done");
         assert_eq!(l[1].spans[1].style, Style::new());
+    }
+
+    #[test]
+    fn other_escapes_leave_no_text() {
+        let l = lines("\x1b]8;;file:///x\x1b\\label\x1b]8;;\x1b\\ \x1b]0;title\x07(\x1b(Bok)");
+        assert_eq!(plain(&l[0]), "label (ok)");
+    }
+
+    #[test]
+    fn colon_sub_parameters() {
+        let l = lines("\x1b[38:2::255:100:0ma\x1b[4:3mb\x1b[4:0mc");
+        let s = &l[0].spans;
+        assert_eq!(s[0].style.fg, Some(Color::Rgb(255, 100, 0)));
+        assert!(s[1].style.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!s[1].style.add_modifier.contains(Modifier::ITALIC));
+        assert!(!s[2].style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }

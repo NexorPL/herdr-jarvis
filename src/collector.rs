@@ -95,8 +95,11 @@ fn ensure_tui(state: &Path) -> anyhow::Result<()> {
     let socket = herdr::socket_path();
     let snap = herdr::client::snapshot(&socket)?;
     let stale = stale_jarvis(&snap);
+    // A leftover that will not close is no reason to leave you without Jarvis.
     for (method, params) in &stale.close {
-        herdr::client::request(&socket, method, params.clone())?;
+        if let Err(e) = herdr::client::request(&socket, method, params.clone()) {
+            log(format!("ensure-collector: {method} {params}: {e}"));
+        }
     }
     let mut open = json!({"plugin_id": "jarvis", "entrypoint": "core", "focus": false});
     if let Some(ws) = &stale.workspace {
@@ -130,6 +133,13 @@ pub struct Stale {
 /// is closed whole, so no empty "Jarvis" tab is left; elsewhere only the Jarvis pane is.
 pub fn stale_jarvis(snap: &herdr::Snapshot) -> Stale {
     let jarvis = |p: &herdr::Pane| p.label.as_deref() == Some("Jarvis");
+    // Jarvis labels its tab "Jarvis", with "▲2 ✓1" counts added while agents wait on you.
+    let jarvis_tab = |label: &str| {
+        (label.strip_prefix("Jarvis"))
+            .is_some_and(|rest| rest.chars().all(|c| " ▲✓0123456789".contains(c)))
+    };
+    // Plugin panes carry their manifest title; run targets label user shells "project:target".
+    let plugin = |p: &herdr::Pane| p.label.as_deref().is_some_and(|l| !l.contains(':'));
     let mut stale = Stale {
         close: Vec::new(),
         panes: Vec::new(),
@@ -141,9 +151,9 @@ pub fn stale_jarvis(snap: &herdr::Snapshot) -> Stale {
             .iter()
             .filter(|p| p.tab_id == tab.tab_id)
             .collect();
-        let only_plugins = panes.iter().all(|p| p.label.is_some());
+        let only_plugins = panes.iter().all(|p| plugin(p));
         if only_plugins
-            && (tab.label.as_deref() == Some("Jarvis") || panes.iter().any(|p| jarvis(p)))
+            && (tab.label.as_deref().is_some_and(jarvis_tab) || panes.iter().any(|p| jarvis(p)))
         {
             stale
                 .close
@@ -282,7 +292,10 @@ mod tests {
                 {"tab_id": "w8:t1", "workspace_id": "w8", "label": "1"},
                 {"tab_id": "w8:t2", "workspace_id": "w8", "label": "Jarvis"},
                 {"tab_id": "w8:t4", "workspace_id": "w8", "label": "Jarvis"},
-                {"tab_id": "w8:t5", "workspace_id": "w8", "label": "mine"}
+                {"tab_id": "w8:t5", "workspace_id": "w8", "label": "mine"},
+                {"tab_id": "w8:t6", "workspace_id": "w8", "label": "Jarvis ▲1 ✓2"},
+                {"tab_id": "w8:t7", "workspace_id": "w8", "label": "Jarvis - notes"},
+                {"tab_id": "w8:t8", "workspace_id": "w8", "label": "x"}
             ],
             "panes": [
                 {"pane_id": "w8:pD", "workspace_id": "w8", "tab_id": "w8:t1", "label": "Sidebar", "agent_status": "unknown"},
@@ -291,7 +304,11 @@ mod tests {
                 {"pane_id": "w8:pA", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Jarvis", "agent_status": "unknown"},
                 {"pane_id": "w8:pB", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Sidebar", "agent_status": "unknown"},
                 {"pane_id": "w8:pJ", "workspace_id": "w8", "tab_id": "w8:t5", "label": "Jarvis", "agent_status": "unknown"},
-                {"pane_id": "w8:p9", "workspace_id": "w8", "tab_id": "w8:t5", "agent_status": "idle"}
+                {"pane_id": "w8:p9", "workspace_id": "w8", "tab_id": "w8:t5", "agent_status": "idle"},
+                {"pane_id": "w8:pT", "workspace_id": "w8", "tab_id": "w8:t6", "label": "Sidebar", "agent_status": "unknown"},
+                {"pane_id": "w8:pU", "workspace_id": "w8", "tab_id": "w8:t7", "label": "Sidebar", "agent_status": "unknown"},
+                {"pane_id": "w8:pK", "workspace_id": "w8", "tab_id": "w8:t8", "label": "Jarvis", "agent_status": "unknown"},
+                {"pane_id": "w8:pR", "workspace_id": "w8", "tab_id": "w8:t8", "label": "alpha:api", "agent_status": "unknown"}
             ]
         }))
         .unwrap();
@@ -304,12 +321,22 @@ mod tests {
                 )
             })
             .collect();
-        // An empty leftover tab and a Jarvis tab close whole; a tab with a user pane keeps it.
+        // Empty leftover tabs (also one labelled with counts) and a Jarvis tab close whole; a tab
+        // with a user pane or a run target keeps it, and a tab only named like Jarvis is left be.
         assert_eq!(
             close,
-            ["tab.close w8:t2", "tab.close w8:t4", "pane.close w8:pJ"]
+            [
+                "tab.close w8:t2",
+                "tab.close w8:t4",
+                "pane.close w8:pJ",
+                "tab.close w8:t6",
+                "pane.close w8:pK"
+            ]
         );
-        assert_eq!(stale.panes, ["w8:pS", "w8:pA", "w8:pB", "w8:pJ"]);
+        assert_eq!(
+            stale.panes,
+            ["w8:pS", "w8:pA", "w8:pB", "w8:pJ", "w8:pT", "w8:pK"]
+        );
         assert_eq!(stale.workspace.as_deref(), Some("w8"));
     }
 

@@ -264,7 +264,7 @@ fn event_loop(
                 app.screens = (app.visible_agents().into_iter())
                     .map(|(_, a)| {
                         let text = demo::screen(a.pane.title(), a.pane.agent_status);
-                        (a.pane.pane_id.clone(), text)
+                        (a.pane.pane_id.clone(), ansi::lines(&text))
                     })
                     .collect();
             }
@@ -278,7 +278,11 @@ fn event_loop(
                 };
                 plan.typing = app.typing.clone();
             }
-            app.screens.extend(screens.try_iter());
+            app.screens.extend(
+                screens
+                    .try_iter()
+                    .map(|(pane, text)| (pane, ansi::lines(&text))),
+            );
         }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
@@ -325,6 +329,16 @@ fn event_loop(
             );
             app.clamp();
             dirty = false;
+            // Forget the screens of closed panes, and stop typing into one.
+            let open: std::collections::HashSet<&str> = (app.model.projects.iter())
+                .flat_map(|p| &p.agents)
+                .map(|a| a.pane.pane_id.as_str())
+                .collect();
+            app.screens.retain(|pane, _| open.contains(pane.as_str()));
+            if app.typing.as_deref().is_some_and(|p| !open.contains(p)) {
+                app.typing = None;
+                app.status = Some("the agent you were typing into is gone".into());
+            }
         }
         app.set_looking(snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
         let label = app.tab_label();
@@ -499,6 +513,15 @@ fn spawn_reader(plan: Arc<Mutex<ReadPlan>>, typed: Arc<AtomicBool>) -> Receiver<
                 for pane in live.iter().filter(|p| Some(*p) != typing.as_ref()) {
                     if !read(pane) {
                         return;
+                    }
+                    // Keys typed meanwhile show without waiting for the rest of the cards.
+                    if let Some(t) = typing
+                        .as_deref()
+                        .filter(|_| typed.swap(false, Ordering::Relaxed))
+                    {
+                        if !read(t) {
+                            return;
+                        }
                     }
                 }
                 all_read = Instant::now();

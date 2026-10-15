@@ -11,7 +11,9 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
     note_ts(t, ts);
     let p = &v["payload"];
     match v["type"].as_str() {
-        Some("session_meta") => {
+        // The first one is this session's (it sets the cwd); a fork or resume can copy another
+        // session's after it.
+        Some("session_meta") if t.cwd.is_none() => {
             if let Some(id) = p["id"].as_str() {
                 t.session_id = id.to_string();
             }
@@ -54,9 +56,12 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
             // added, attributed to the current model. A model switch mid-turn lands on the new one.
             Some("token_count") => {
                 let total = usage_of(&p["info"]["total_token_usage"]);
-                if total.total() > state.total.total() {
+                // A total below the last one is a new count (a resumed session): all of it is new.
+                if total.total() != state.total.total() {
                     let mut delta = total;
-                    delta -= state.total;
+                    if total.total() > state.total.total() {
+                        delta -= state.total;
+                    }
                     if let Some(ts) = ts {
                         let model = state.model.as_deref().unwrap_or("codex");
                         add_usage(t, ts, model, delta);
@@ -151,5 +156,22 @@ mod tests {
             ("th-2", "Scout", "explorer")
         );
         assert!(!s.ended);
+    }
+
+    #[test]
+    fn a_restarted_total_and_a_copied_meta_keep_the_session() {
+        let mut lines: Vec<&str> = ROLLOUT.to_vec();
+        lines.extend([
+            r#"{"timestamp":"2026-10-08T10:01:00.000Z","type":"session_meta","payload":{"id":"th-other","cwd":"/elsewhere"}}"#,
+            r#"{"timestamp":"2026-10-08T10:01:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10}}}}"#,
+        ]);
+        let t = &index(Kind::Codex, "sessions/2026/10/08/r.jsonl", &lines)[0];
+        assert_eq!(
+            (t.session_id.as_str(), t.cwd.as_deref()),
+            ("th-1", Some("/home/u/alpha"))
+        );
+        // 500 + 1000 cached + 80 out before, then a new count of 100 + 10.
+        let u = t.usage[&local_day(ts("2026-10-08T10:00:04Z"))]["gpt-5.5-codex"];
+        assert_eq!((u.input, u.output), (600, 90));
     }
 }

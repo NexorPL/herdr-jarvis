@@ -277,8 +277,8 @@ fn card(
     let screen = app
         .screens
         .get(&a.pane.pane_id)
-        .map(String::as_str)
-        .unwrap_or("");
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let lines = activity(screen, typing || s == AgentStatus::Blocked);
     let tail = lines[lines.len().saturating_sub(inner)..].to_vec();
     f.render_widget(Paragraph::new(tail).block(block), rect);
@@ -289,9 +289,9 @@ fn card(
 /// Blank lines are kept single, like the gaps between the agent's blocks.
 /// ponytail: the input box is found by its horizontal rules in the last six lines; agents that
 /// draw it differently show it in their card.
-fn activity(screen: &str, blocked: bool) -> Vec<Line<'static>> {
+fn activity(screen: &[Line<'static>], blocked: bool) -> Vec<Line<'static>> {
     let mut lines: Vec<(String, Line<'static>)> = Vec::new();
-    for l in super::ansi::lines(screen) {
+    for l in screen.iter().cloned() {
         let text = super::ansi::plain(&l).trim_end().to_string();
         let blank = text.trim().is_empty();
         if blank && lines.last().is_none_or(|(t, _)| t.trim().is_empty()) {
@@ -977,12 +977,7 @@ mod tests {
         let pane = app.visible_agents()[0].1.pane.pane_id.clone();
         app.screens.insert(
             pane,
-            "old line
-
-> fix it
-● Update(src/lib.rs)
-"
-            .into(),
+            crate::ui::ansi::lines("old line\n\n> fix it\n● Update(src/lib.rs)\n"),
         );
         let out = screen(&app, 120, 30);
         assert!(out.contains("● Update(src/lib.rs)"));
@@ -1006,7 +1001,7 @@ mod tests {
 "
         );
         let plain = |screen: &str, blocked| -> Vec<String> {
-            (activity(screen, blocked).iter())
+            (activity(&crate::ui::ansi::lines(screen), blocked).iter())
                 .map(|l| crate::ui::ansi::plain(l).trim_end().to_string())
                 .collect()
         };

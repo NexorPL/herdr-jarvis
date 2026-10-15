@@ -390,6 +390,9 @@ fn note_prompt(t: &mut Thread, text: &str) {
     }
     t.turns += 1;
     t.last_prompt = Some(snippet(text));
+    if text.starts_with('<') {
+        return;
+    }
     t.title.get_or_insert_with(|| {
         text.lines()
             .next()
@@ -483,6 +486,9 @@ mod tests {
         let mut t = Thread::default();
         note_prompt(&mut t, "  first line\nmore");
         note_prompt(&mut t, "second");
+        let mut cmd = Thread::default();
+        note_prompt(&mut cmd, "<command-name>/model</command-name>");
+        assert_eq!((cmd.turns, cmd.title.as_deref()), (1, None));
         assert_eq!(t.title.as_deref(), Some("first line"));
         assert_eq!((t.turns, t.last_prompt.as_deref()), (2, Some("second")));
     }
