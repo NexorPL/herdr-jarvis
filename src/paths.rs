@@ -22,7 +22,7 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     }
 }
 
-fn env_path(name: &str) -> Option<PathBuf> {
+pub fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

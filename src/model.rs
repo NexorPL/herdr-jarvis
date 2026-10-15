@@ -162,7 +162,13 @@ pub fn build(
     event_rows.reverse();
 
     let mut projects: HashMap<String, Project> = HashMap::new();
-    for pane in &snap.panes {
+    // Jarvis's own pane sits in its plugin directory (`plugins/github/herdr-jarvis-<hash>` when
+    // installed from GitHub), which is no project.
+    for pane in snap
+        .panes
+        .iter()
+        .filter(|p| p.label.as_deref() != Some("Jarvis"))
+    {
         if let Some(cwd) = &pane.cwd {
             entry(&mut projects, &resolver.resolve(cwd));
         }
@@ -346,6 +352,7 @@ pub mod testkit {
             version: "0.9.3".into(),
             protocol: 22,
             focused_pane_id: None,
+            tabs: Vec::new(),
             workspaces: vec![
                 Workspace {
                     workspace_id: "w1".into(),
@@ -542,7 +549,7 @@ mod tests {
         let now = ts("2026-10-08T12:00:00Z");
         let days = last_days(now, 3);
         assert_eq!(days.len(), 3);
-        assert_eq!(days[2], crate::transcripts::claude::local_day(now));
+        assert_eq!(days[2], crate::transcripts::local_day(now));
         assert!(days[0] < days[1]);
     }
 
@@ -560,6 +567,24 @@ mod tests {
         );
         assert_eq!(m.pane_labels.len(), 1);
         assert_eq!(m.pane_labels["gamma:web"], "w3:p1");
+    }
+
+    #[test]
+    fn jarvis_own_pane_is_no_project() {
+        let mut snap = snapshot();
+        let mut me = snap.panes[0].clone();
+        me.cwd = Some("/home/u/.config/herdr/plugins/github/herdr-jarvis-b384sdf".into());
+        me.label = Some("Jarvis".into());
+        snap.panes.push(me);
+        let m = build(
+            &snap,
+            &threads(),
+            &[],
+            &Pricing::new(HashMap::new()),
+            &mut Resolver::default(),
+            "2026-10-08",
+        );
+        assert!(m.projects.iter().all(|p| !p.name.contains("jarvis")));
     }
 
     #[test]

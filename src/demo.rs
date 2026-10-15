@@ -111,7 +111,7 @@ pub fn snapshot() -> Snapshot {
             json!({
                 "pane_id": format!("{ws}:p{i}"), "workspace_id": ws, "tab_id": format!("{ws}:t1"),
                 "cwd": cwd, "agent": agent, "agent_status": status, "terminal_title_stripped": title,
-                "agent_session": (*agent == "claude").then(|| json!({"value": format!("demo-{i}")})),
+                "agent_session": (*agent != "opencode").then(|| json!({"value": format!("demo-{i}")})),
             })
         })
         .collect();
@@ -125,13 +125,14 @@ pub fn snapshot() -> Snapshot {
     .expect("demo snapshot")
 }
 
-/// One Claude thread per Claude agent, with a week of usage.
+/// One thread per Claude or Codex agent, with a week of usage.
 pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
     (AGENTS.iter().enumerate())
-        .filter(|(_, a)| a.2 == "claude")
-        .map(|(i, (_, cwd, _, _, title, ago))| {
+        .filter(|(_, a)| a.2 != "opencode")
+        .map(|(i, (_, cwd, agent, _, title, ago))| {
             let mut t = Thread {
                 session_id: format!("demo-{i}"),
+                agent: agent.to_string(),
                 title: Some(title.to_string()),
                 cwd: Some(cwd.to_string()),
                 branch: Some("main".into()),
@@ -143,12 +144,16 @@ pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
             for day in 0..7u64 {
                 let k = (i as u64 + 1) * (7 - day);
                 t.usage
-                    .entry(crate::transcripts::claude::local_day(
+                    .entry(crate::transcripts::local_day(
                         now - Duration::days(day as i64),
                     ))
                     .or_default()
                     .insert(
-                        MODELS[(i + day as usize) % 3].into(),
+                        match *agent {
+                            "codex" => "gpt-5.5-codex",
+                            _ => MODELS[(i + day as usize) % 3],
+                        }
+                        .into(),
                         Usage {
                             input: 9_000 * k,
                             output: 14_000 * k,
@@ -210,6 +215,39 @@ pub fn question() -> &'static str {
     2. Yes, and don't ask again for npm test commands in /home/me/shop
     3. No, and tell Claude what to do differently (esc)
 "
+}
+
+/// What an agent's screen shows in the Live tab, with colors as herdr reads them (`format: ansi`).
+pub fn screen(title: &str, status: AgentStatus) -> String {
+    const DIM: &str = "[38;2;153;153;153m";
+    const OK: &str = "[38;2;78;186;101m";
+    const ORANGE: &str = "[38;2;215;119;87m";
+    const ADD: &str = "[48;2;34;92;43m";
+    const DEL: &str = "[48;2;122;41;54m";
+    const R: &str = "[0m";
+    match status {
+        AgentStatus::Blocked => question().into(),
+        AgentStatus::Working => format!(
+            "{DIM}> {title}{R}
+
+{OK}●{R} Reading the code around it.
+  {DIM}⎿  Read 3 files{R}
+
+             {OK}●{R} [1mUpdate[22m(src/lib.rs)
+  {DIM}⎿  Updated with 2 additions and 1 removal{R}
+             {DEL}  41 -        retry(1)                {R}
+             {ADD}  41 +        retry(backoff(attempt)) {R}
+             {ADD}  42 +        attempt += 1            {R}
+
+             {ORANGE}✻ Working… {DIM}(esc to interrupt){R}"
+        ),
+        _ => format!(
+            "{DIM}> {title}{R}
+
+{OK}●{R} Done. Tests pass.
+  {DIM}⎿  42 passed in 3.1s{R}"
+        ),
+    }
 }
 
 pub fn ideas() -> Vec<Idea> {
@@ -281,10 +319,10 @@ mod tests {
             &records(now),
             &crate::pricing::Pricing::new(Default::default()),
             &mut crate::projects::Resolver::default(),
-            &crate::transcripts::claude::local_day(now),
+            &crate::transcripts::local_day(now),
         );
         assert_eq!(m.projects.len(), 7);
         assert_eq!(m.projects[0].name, "shop");
-        assert!(m.totals.blocked == 1 && m.threads.len() == 6);
+        assert!(m.totals.blocked == 1 && m.threads.len() == 8);
     }
 }

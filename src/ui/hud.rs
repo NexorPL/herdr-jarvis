@@ -77,13 +77,31 @@ pub fn status_bar(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn draw_core(f: &mut Frame, area: Rect, app: &App) {
+    let [main, keys] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    key_line(f, keys, app);
     if app.compact {
-        return compact(f, area, app);
+        return compact(f, main, app);
     }
     let [field, feed_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(main);
     reactor(f, field, app);
     feed(f, feed_area, app);
+}
+
+/// What the core takes: the keys that matter here, the rest is behind `?`.
+fn key_line(f: &mut Frame, area: Rect, app: &App) {
+    let keys = [
+        ("←↑↓→", "select"),
+        ("Enter", "open"),
+        ("N", "new agent"),
+        ("o", "options"),
+        ("v", "panels"),
+        ("A T L U I G", "all-project views"),
+        ("?", "help"),
+        ("q", "quit"),
+    ];
+    let spans = super::views::key_bar(&keys, &app.palette);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn node_pos(i: usize, n: usize, w: f64, h: f64) -> (f64, f64) {
@@ -481,8 +499,18 @@ mod tests {
     fn running_subagents_count_on_their_node() {
         let mut app = crate::ui::app::with_subagents(sample_app());
         assert!(core(&app, 100, 30).contains("●1 · 1 sub"));
-        // Silent for 15 minutes: no longer running.
+        // Silent for 15 minutes but its parent still works: a long tool call, still running.
         app.now += chrono::Duration::minutes(16);
+        assert!(core(&app, 100, 30).contains("1 sub"));
+        // Parent idle and the subagent silent: no longer running.
+        for a in app
+            .model
+            .projects
+            .iter_mut()
+            .flat_map(|p| p.agents.iter_mut())
+        {
+            a.pane.agent_status = crate::herdr::AgentStatus::Idle;
+        }
         assert!(!core(&app, 100, 30).contains("sub"));
     }
 

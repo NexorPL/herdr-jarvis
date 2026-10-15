@@ -1,7 +1,8 @@
-//! The five list tabs, shared by the project drill-down and the global views.
+//! The list tabs, shared by the project drill-down and the global views.
 
 use super::app::{App, Screen, Tab};
 use super::theme::{self, Palette};
+use crate::herdr::AgentStatus;
 use crate::ideas::Status as IdeaStatus;
 use crate::model::{self, GroupBy, UsageRow};
 use ratatui::prelude::*;
@@ -34,6 +35,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Tab::Timeline => timeline(f, body, app, pal),
         Tab::Usage => usage(f, body, app, pal),
         Tab::Ideas => ideas(f, body, app, pal),
+        Tab::Live => live(f, body, app, pal),
     }
     f.render_widget(Paragraph::new(footer_line(app, pal)), footer);
 }
@@ -76,28 +78,79 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Keys as a bar: each key in the accent color, its action dimmed.
+pub fn key_bar(keys: &[(&str, &str)], pal: &Palette) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (k, what) in keys {
+        spans.push(Span::styled(
+            format!(" {k}"),
+            Style::new().fg(pal.accent).bold(),
+        ));
+        spans.push(Span::styled(format!(" {what} "), Style::new().fg(pal.dim)));
+    }
+    spans
+}
+
+/// The panels screen: every agent's card and the keys, nothing else.
+pub fn draw_panels(f: &mut Frame, area: Rect, app: &App) {
+    let pal = &app.palette;
+    let [body, footer] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    live(f, body, app, pal);
+    let keys = [
+        ("←↑↓→", "select"),
+        ("Enter", "type into agent"),
+        ("g", "go to agent"),
+        ("p", "prompt/answer"),
+        ("R", "rename"),
+        ("x", "run"),
+        ("N", "new agent"),
+        ("o", "options"),
+        ("Esc v", "core"),
+        ("?", "help"),
+    ];
+    f.render_widget(Paragraph::new(Line::from(key_bar(&keys, pal))), footer);
+}
+
 fn footer_line(app: &App, pal: &Palette) -> Line<'static> {
-    let mut hint = String::from(" ↑↓ move · Enter open · Tab views · / search");
-    if app.tab().has_state() {
-        hint.push_str(" · s state");
+    let tab = app.tab();
+    let mut keys = vec![("↑↓", "move"), ("Enter", "open"), ("Tab", "views")];
+    if tab == Tab::Live {
+        keys[1] = ("Enter", "type into agent");
+        keys.push(("g", "go to agent"));
     }
-    if app.tab() == Tab::Timeline {
-        hint.push_str(" · w range");
+    if tab.lists_agents() {
+        keys.extend([("p", "prompt/answer"), ("R", "rename")]);
     }
-    if app.tab() == Tab::Ideas {
-        hint.push_str(" · a add · e edit · d delete · Space status · s filter · c done");
+    if matches!(app.screen, Screen::Project { .. }) || tab.lists_agents() {
+        keys.push(("x", "run"));
     }
-    if app.tab() == Tab::Agents {
-        hint.push_str(" · p prompt/answer");
+    if tab == Tab::Ideas {
+        keys.extend([
+            ("a", "add"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("Space", "status"),
+            ("s", "filter"),
+            ("c", "done"),
+        ]);
     }
-    if matches!(app.screen, Screen::Project { .. }) || app.tab() == Tab::Agents {
-        hint.push_str(" · x run");
+    keys.push(("/", "search"));
+    if tab.has_state() {
+        keys.push(("s", "state"));
+    }
+    if tab == Tab::Timeline {
+        keys.push(("w", "range"));
     }
     if matches!(app.screen, Screen::Global(_)) {
-        hint.push_str(" · f project");
+        keys.push(("f", "project"));
     }
-    hint.push_str(" · ? help");
-    let mut spans = vec![Span::styled(hint, Style::new().fg(pal.dim))];
+    keys.extend([
+        ("N", "new agent"),
+        ("o", "options"),
+        ("v", "view"),
+        ("?", "help"),
+    ]);
+    let mut spans = key_bar(&keys, pal);
     if app.search_editing || !app.search.is_empty() {
         spans.push(Span::styled(
             format!("   /{}", app.search),
@@ -134,6 +187,134 @@ fn empty(f: &mut Frame, area: Rect, msg: &str, pal: &Palette) {
     );
 }
 
+/// One card per agent with the last lines of its screen. The cards share the whole body: the
+/// column count giving the roomiest cards wins, a short last row stretches, and only when cards
+/// would get smaller than `MIN_W`×`MIN_H` does the grid keep that size and scroll to the selection.
+fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
+    let rows = app.visible_agents();
+    if rows.is_empty() {
+        return empty(f, area, "no agents here", pal);
+    }
+    let (cols, fit) = grid(rows.len(), area.width, area.height);
+    app.grid_cols.set(cols);
+    let first = (app.selected_row / cols).saturating_sub(fit - 1) * cols;
+    let shown = &rows[first..rows.len().min(first + cols * fit)];
+    let row_count = shown.len().div_ceil(cols);
+    let lines =
+        Layout::vertical(vec![Constraint::Ratio(1, row_count as u32); row_count]).split(area);
+    for (r, line) in lines.iter().enumerate() {
+        let cards = &shown[r * cols..shown.len().min((r + 1) * cols)];
+        let cells = Layout::horizontal(vec![Constraint::Ratio(1, cards.len() as u32); cards.len()])
+            .split(*line);
+        for (c, ((p, a), rect)) in cards.iter().zip(cells.iter()).enumerate() {
+            let selected = first + r * cols + c == app.selected_row;
+            card(f, *rect, app, pal, p, a, selected);
+        }
+    }
+}
+
+const MIN_W: u16 = 40;
+const MIN_H: u16 = 7;
+
+/// Columns and rows of cards for `n` agents in `w`×`h` cells.
+fn grid(n: usize, w: u16, h: u16) -> (usize, usize) {
+    let max_cols = ((w / MIN_W).max(1) as usize).min(n);
+    let max_rows = (h / MIN_H).max(1) as usize;
+    // Cards about 2.5 times as wide as tall (in cells) read best; take the most room at that shape.
+    let score = |cols: usize| {
+        let rows = n.div_ceil(cols);
+        let (cw, ch) = (w as f64 / cols as f64, h as f64 / rows as f64);
+        // Empty slots in the last row count against a layout.
+        (cw / 2.5).min(ch) * n as f64 / (rows * cols) as f64
+    };
+    match (1..=max_cols)
+        .filter(|c| n.div_ceil(*c) <= max_rows)
+        .max_by(|a, b| score(*a).total_cmp(&score(*b)))
+    {
+        Some(cols) => (cols, n.div_ceil(cols)),
+        None => (max_cols, max_rows),
+    }
+}
+
+fn card(
+    f: &mut Frame,
+    rect: Rect,
+    app: &App,
+    pal: &Palette,
+    p: &model::Project,
+    a: &model::AgentRow,
+    selected: bool,
+) {
+    let s = a.pane.agent_status;
+    let color = theme::status_color(s, pal);
+    let title = format!(
+        " {} {} · {} · {} ",
+        theme::glyph(s),
+        p.name,
+        a.pane.agent.as_deref().unwrap_or("agent"),
+        a.pane.title()
+    );
+    // While you type into it the card shows the whole screen, input box included.
+    let typing = app.typing.as_deref() == Some(a.pane.pane_id.as_str());
+    let title = match typing {
+        true => format!(" ⌨ typing · Esc leaves ·{title}"),
+        false => title,
+    };
+    let block = Block::bordered()
+        .border_type(if typing {
+            ratatui::widgets::BorderType::Double
+        } else if selected {
+            ratatui::widgets::BorderType::Thick
+        } else {
+            ratatui::widgets::BorderType::Rounded
+        })
+        .border_style(Style::new().fg(if selected { pal.accent } else { color }))
+        .title(Span::styled(
+            theme::truncate(&title, rect.width.saturating_sub(4) as usize),
+            Style::new().fg(color).bold(),
+        ));
+    let inner = rect.height.saturating_sub(2) as usize;
+    let screen = app
+        .screens
+        .get(&a.pane.pane_id)
+        .map(String::as_str)
+        .unwrap_or("");
+    let lines = activity(screen, typing || s == AgentStatus::Blocked);
+    let tail = lines[lines.len().saturating_sub(inner)..].to_vec();
+    f.render_widget(Paragraph::new(tail).block(block), rect);
+}
+
+/// An agent screen in its own colors, without its input box and the hints under it, which take
+/// the last lines of every screen; a blocked agent keeps them, its question is down there.
+/// Blank lines are kept single, like the gaps between the agent's blocks.
+/// ponytail: the input box is found by its horizontal rules in the last six lines; agents that
+/// draw it differently show it in their card.
+fn activity(screen: &str, blocked: bool) -> Vec<Line<'static>> {
+    let mut lines: Vec<(String, Line<'static>)> = Vec::new();
+    for l in super::ansi::lines(screen) {
+        let text = super::ansi::plain(&l).trim_end().to_string();
+        let blank = text.trim().is_empty();
+        if blank && lines.last().is_none_or(|(t, _)| t.trim().is_empty()) {
+            continue;
+        }
+        lines.push((text, l));
+    }
+    let rule = |l: &str| {
+        let l = l.trim();
+        l.chars().count() > 10 && l.chars().all(|c| "─━═╭╮╰╯│ ".contains(c))
+    };
+    if !blocked {
+        let tail = lines.len().saturating_sub(6);
+        if let Some(cut) = (tail..lines.len()).find(|&i| rule(&lines[i].0)) {
+            lines.truncate(cut);
+        }
+    }
+    while lines.last().is_some_and(|(t, _)| t.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.into_iter().map(|(_, l)| l).collect()
+}
+
 fn table_state(selected: usize) -> TableState {
     TableState::default().with_selected(Some(selected))
 }
@@ -146,9 +327,15 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let [list, side] =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(area);
     let global = matches!(app.screen, Screen::Global(_));
-    let body: Vec<Row> = rows
-        .iter()
-        .map(|(p, a)| {
+    // Each agent row is followed by its subagents (running, or finished in the last 10 minutes);
+    // those rows are not selectable, so the selection maps to the agent rows only.
+    let mut body: Vec<Row> = Vec::new();
+    let mut selected = 0;
+    for (i, (p, a)) in rows.iter().enumerate() {
+        if i == app.selected_row {
+            selected = body.len();
+        }
+        body.push({
             let s = a.pane.agent_status;
             let title = match &a.worktree {
                 Some(_) => format!("⎇ {}", a.pane.title()),
@@ -174,8 +361,41 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                 cells.insert(1, Cell::from(p.name.clone()));
             }
             Row::new(cells)
-        })
-        .collect();
+        });
+        let subs: Vec<_> = (app.subagents(a).into_iter())
+            .filter(|(sub, running)| {
+                *running
+                    || sub
+                        .last_ts
+                        .is_some_and(|t| app.now - t < chrono::Duration::minutes(10))
+            })
+            .collect();
+        for (n, (sub, running)) in subs.iter().enumerate() {
+            let branch = if n + 1 == subs.len() { "└" } else { "├" };
+            let (glyph, color) = if *running {
+                ("●", pal.accent)
+            } else {
+                ("✓", pal.dim)
+            };
+            let mut cells = vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(format!(" {branch} "), Style::new().fg(pal.dim)),
+                    Span::styled(glyph, Style::new().fg(color)),
+                ])),
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    theme::truncate(&sub.agent_type, 8),
+                    Style::new().fg(pal.dim),
+                )),
+                Cell::from(theme::truncate(&sub.description, 48)),
+                Cell::from(theme::ago(sub.last_ts, app.now)),
+            ];
+            if global {
+                cells.insert(1, Cell::from(""));
+            }
+            body.push(Row::new(cells).style(Style::new().fg(pal.dim)));
+        }
+    }
     let mut widths = vec![
         Constraint::Length(10),
         Constraint::Length(8),
@@ -191,7 +411,7 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let table = Table::new(body, widths)
         .header(Row::new(header).style(Style::new().fg(pal.dim)))
         .row_highlight_style(Style::new().bg(pal.highlight));
-    f.render_stateful_widget(table, list, &mut table_state(app.selected_row));
+    f.render_stateful_widget(table, list, &mut table_state(selected));
 
     let Some((_, a)) = rows.get(app.selected_row) else {
         return;
@@ -236,8 +456,8 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     if !subs.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::styled("subagents", Style::new().fg(pal.dim)));
-        for sub in subs.iter().take(8) {
-            let (glyph, color) = if sub.running(app.now) {
+        for (sub, running) in subs.iter().take(8) {
+            let (glyph, color) = if *running {
                 ("●", pal.accent)
             } else {
                 ("✓", pal.dim)
@@ -281,7 +501,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let rows = app.visible_threads();
     if rows.is_empty() {
         let msg = if app.search.is_empty() {
-            "no Claude Code threads"
+            "no agent threads"
         } else {
             "no threads match the search"
         };
@@ -303,6 +523,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                     t.thread.title.as_deref().unwrap_or("(untitled)"),
                     44,
                 )),
+                Cell::from(t.thread.agent.clone()),
                 Cell::from(t.project_name.clone()),
                 Cell::from(t.thread.branch.clone().unwrap_or_default()),
                 Cell::from(theme::ago(t.thread.last_ts, app.now)),
@@ -315,6 +536,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let widths = [
         Constraint::Length(11),
         Constraint::Min(16),
+        Constraint::Length(7),
         Constraint::Length(18),
         Constraint::Length(14),
         Constraint::Length(5),
@@ -325,7 +547,7 @@ fn threads(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let table = Table::new(body, widths)
         .header(
             Row::new(vec![
-                "", "title", "project", "branch", "last", "turns", "tokens", "cost",
+                "", "title", "agent", "project", "branch", "last", "turns", "tokens", "cost",
             ])
             .style(Style::new().fg(pal.dim)),
         )
@@ -504,7 +726,7 @@ fn usage(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
         GroupBy::Day,
     );
     if daily.is_empty() {
-        return empty(f, area, "no Claude Code usage in the last 14 days", pal);
+        return empty(f, area, "no agent usage in the last 14 days", pal);
     }
     let by_cost = |mut rows: Vec<UsageRow>| {
         rows.sort_by(|a, b| b.cost.usd.total_cmp(&a.cost.usd));
@@ -620,6 +842,9 @@ mod tests {
         assert!(out.contains("subagents"));
         assert!(out.contains("● Find the lexer Explore"));
         assert!(out.contains("✓ Old survey"));
+        // And as tree rows under their agent in the list.
+        assert!(out.contains(" ├ ●") && out.contains("Explore  Find the lexer"));
+        assert!(out.contains(" └ ✓") && out.contains("Explore  Old survey"));
     }
 
     #[test]
@@ -743,5 +968,62 @@ mod tests {
             screen(&app, 8, 3);
             screen(&app, 1, 1);
         }
+    }
+
+    #[test]
+    fn live_cards_show_each_agent_screen() {
+        let mut app = sample_app();
+        app.screen = Screen::Global(Tab::Live);
+        let pane = app.visible_agents()[0].1.pane.pane_id.clone();
+        app.screens.insert(
+            pane,
+            "old line
+
+> fix it
+● Update(src/lib.rs)
+"
+            .into(),
+        );
+        let out = screen(&app, 120, 30);
+        assert!(out.contains("● Update(src/lib.rs)"));
+        assert!(out.contains("> fix it"));
+        // A card per agent, the selected one with a thick border.
+        assert!(out.contains("┏"));
+        assert_eq!(out.matches("╭").count(), app.visible_agents().len() - 1);
+    }
+
+    #[test]
+    fn activity_drops_the_input_box() {
+        let rule = "─".repeat(40);
+        let screen = format!(
+            "● Update(a.rs)
+  ⎿  done
+
+{rule}
+❯ 
+{rule}
+  ⏵⏵ auto mode on
+"
+        );
+        let plain = |screen: &str, blocked| -> Vec<String> {
+            (activity(screen, blocked).iter())
+                .map(|l| crate::ui::ansi::plain(l).trim_end().to_string())
+                .collect()
+        };
+        assert_eq!(plain(&screen, false), ["● Update(a.rs)", "  ⎿  done"]);
+        assert_eq!(plain(&screen, true).len(), 7);
+        assert_eq!(plain("\n\njust\n\n\ntext\n\n", false), ["just", "", "text"]);
+    }
+
+    #[test]
+    fn cards_fill_the_screen() {
+        // Few agents: big cards, no empty rows.
+        assert_eq!(grid(1, 200, 50), (1, 1));
+        assert_eq!(grid(2, 200, 50), (2, 1));
+        assert_eq!(grid(4, 200, 50), (2, 2));
+        assert_eq!(grid(9, 200, 50), (3, 3));
+        // Too many to fit at the minimum size: as many as fit, the rest scrolls.
+        assert_eq!(grid(40, 200, 50), (5, 7));
+        assert_eq!(grid(3, 30, 5), (1, 1));
     }
 }

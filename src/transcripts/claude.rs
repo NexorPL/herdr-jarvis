@@ -1,194 +1,61 @@
-//! Incremental index over `~/.claude/projects/<dir>/<session>.jsonl`.
+//! Claude Code: `~/.claude/projects/<dir>/<session>.jsonl` plus `<session>/subagents/agent-<id>.jsonl`.
 
-use super::{SubAgent, Thread};
+use super::{note_prompt, note_ts, timestamp, FileState, Thread};
 use crate::pricing::Usage;
-use chrono::{DateTime, Local, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-const SNIPPET_CHARS: usize = 300;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct FileState {
-    len: u64,
-    offset: u64,
-    /// Claude Code writes one line per content block, each repeating the message's usage.
-    /// ponytail: copies are consecutive (verified on real transcripts), so the last id is enough.
-    last_message_id: Option<String>,
-    /// Day, model and usage counted for `last_message_id`.
-    #[serde(default)]
-    last_usage: Option<(String, String, Usage)>,
-    #[serde(default)]
-    bad_lines: u64,
-    /// The last reply ended its turn; only read for subagents.
-    #[serde(default)]
-    ended: bool,
-    /// Subagent description and type from `agent-<id>.meta.json`.
-    #[serde(default)]
-    meta: Option<(String, String)>,
-    thread: Thread,
+pub(super) fn files(claude_dir: &Path) -> Vec<PathBuf> {
+    let jsonl = |p: &PathBuf| p.extension().is_some_and(|x| x == "jsonl");
+    let mut files = Vec::new();
+    for project in super::list(&claude_dir.join("projects"))
+        .into_iter()
+        .filter(|p| p.is_dir())
+    {
+        for entry in super::list(&project) {
+            if entry.is_dir() {
+                files.extend(
+                    super::list(&entry.join("subagents"))
+                        .into_iter()
+                        .filter(jsonl),
+                );
+            } else if jsonl(&entry) {
+                files.push(entry);
+            }
+        }
+    }
+    files
 }
 
-pub struct ClaudeSource {
-    projects_dir: PathBuf,
-    index_path: PathBuf,
-    files: HashMap<String, FileState>,
-    dirty: bool,
-}
-
-impl ClaudeSource {
-    pub fn new(claude_dir: &Path, index_path: PathBuf) -> ClaudeSource {
-        let files = std::fs::read_to_string(&index_path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        ClaudeSource {
-            projects_dir: claude_dir.join("projects"),
-            index_path,
-            files,
-            dirty: false,
-        }
-    }
-
-    /// Reads whatever changed since the last call and returns every known thread.
-    pub fn refresh(&mut self) -> Vec<Thread> {
-        for path in self.transcript_files() {
-            if let Err(e) = self.refresh_file(&path) {
-                crate::log::log(format!("transcripts: {}: {e}", path.display()));
-            }
-        }
-        if self.dirty {
-            self.save();
-        }
-        // Subagent transcripts add usage and activity to their parent session, and are listed in it.
-        let mut threads: HashMap<String, Thread> = HashMap::new();
-        let mut subagents = Vec::new();
-        for (path, f) in &self.files {
-            if is_subagent(Path::new(path)) {
-                subagents.push((Path::new(path), f));
-            } else {
-                threads.insert(f.thread.session_id.clone(), f.thread.clone());
-            }
-        }
-        subagents.sort_by_key(|(_, f)| f.thread.first_ts);
-        for (path, f) in subagents {
-            let sub = &f.thread;
-            let Some(t) = threads.get_mut(&sub.session_id) else {
-                continue;
-            };
-            let (description, agent_type) = f.meta.clone().unwrap_or_default();
-            t.subagents.push(SubAgent {
-                id: (path.file_stem().map(|s| s.to_string_lossy()))
-                    .map(|s| s.trim_start_matches("agent-").to_string())
-                    .unwrap_or_default(),
-                description,
-                agent_type,
-                last_ts: sub.last_ts,
-                ended: f.ended,
-            });
-            t.last_ts = t.last_ts.max(sub.last_ts);
-            for (day, models) in &sub.usage {
-                for (model, u) in models {
-                    *t.usage
-                        .entry(day.clone())
-                        .or_default()
-                        .entry(model.clone())
-                        .or_default() += *u;
-                }
-            }
-        }
-        threads
-            .into_values()
-            .filter(|t| t.first_ts.is_some())
-            .collect()
-    }
-
-    /// `<project>/<session>.jsonl` plus `<project>/<session>/subagents/*.jsonl`.
-    fn transcript_files(&self) -> Vec<PathBuf> {
-        let list = |dir: &Path| -> Vec<PathBuf> {
-            std::fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .collect()
-        };
-        let jsonl = |p: &PathBuf| p.extension().is_some_and(|x| x == "jsonl");
-        let mut files = Vec::new();
-        for project in list(&self.projects_dir).into_iter().filter(|p| p.is_dir()) {
-            for entry in list(&project) {
-                if entry.is_dir() {
-                    files.extend(list(&entry.join("subagents")).into_iter().filter(jsonl));
-                } else if jsonl(&entry) {
-                    files.push(entry);
-                }
-            }
-        }
-        files
-    }
-
-    fn refresh_file(&mut self, path: &Path) -> std::io::Result<()> {
-        let len = std::fs::metadata(path)?.len();
-        let session = if is_subagent(path) {
-            path.parent().and_then(Path::parent)
-        } else {
-            Some(path)
-        };
-        let stem = session
-            .and_then(|p| p.file_stem())
+/// A subagent file belongs to the session named by its grandparent directory.
+pub(super) fn fresh(path: &Path) -> FileState {
+    let stem = |p: Option<&Path>| {
+        p.and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let fresh = || FileState {
-            thread: Thread {
-                session_id: stem.clone(),
-                ..Default::default()
-            },
+            .unwrap_or_default()
+    };
+    let (id, parent) = if is_subagent(path) {
+        let id = stem(Some(path)).trim_start_matches("agent-").to_string();
+        (id, Some(stem(path.parent().and_then(Path::parent))))
+    } else {
+        (stem(Some(path)), None)
+    };
+    FileState {
+        parent,
+        thread: Thread {
+            session_id: id,
             ..Default::default()
-        };
-        let state = self
-            .files
-            .entry(path.to_string_lossy().to_string())
-            .or_insert_with(&fresh);
-        if state.meta.is_none() && is_subagent(path) {
-            state.meta = read_meta(&path.with_extension("meta.json"));
-        }
-        if len == state.len {
-            return Ok(());
-        }
-        if len < state.offset {
-            *state = fresh();
-        }
-        let mut file = std::fs::File::open(path)?;
-        file.seek(SeekFrom::Start(state.offset))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        state.len = len;
-        self.dirty = true;
-        let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
-            return Ok(());
-        };
-        for line in buf[..end].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            match std::str::from_utf8(line) {
-                Ok(text) => apply_line(state, text),
-                Err(_) => state.bad_lines += 1,
-            }
-        }
-        state.offset += end as u64 + 1;
-        Ok(())
+        },
+        ..Default::default()
     }
+}
 
-    fn save(&mut self) {
-        let tmp = self.index_path.with_extension("json.tmp");
-        if let Ok(text) = serde_json::to_string(&self.files) {
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.index_path);
-            }
-        }
-        self.dirty = false;
+/// Subagent description and type from `agent-<id>.meta.json`, which may appear after the transcript.
+pub(super) fn read_meta_once(path: &Path, state: &mut FileState) {
+    if state.meta.is_some() || !is_subagent(path) {
+        return;
     }
+    state.meta = read_meta(&path.with_extension("meta.json"));
 }
 
 fn read_meta(path: &Path) -> Option<(String, String)> {
@@ -203,16 +70,7 @@ fn is_subagent(path: &Path) -> bool {
         .is_some_and(|n| n == "subagents")
 }
 
-/// Local calendar day of a timestamp, `YYYY-MM-DD`.
-pub fn local_day(ts: DateTime<Utc>) -> String {
-    ts.with_timezone(&Local).format("%Y-%m-%d").to_string()
-}
-
-fn apply_line(state: &mut FileState, line: &str) {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        state.bad_lines += 1;
-        return;
-    };
+pub(super) fn apply(state: &mut FileState, v: &Value) {
     let t = &mut state.thread;
     match v["type"].as_str() {
         Some("ai-title") => {
@@ -221,22 +79,25 @@ fn apply_line(state: &mut FileState, line: &str) {
             }
         }
         Some("user") => {
-            note_common(t, &v);
+            note_common(t, v);
             state.ended = false;
             if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
                 return;
             }
             if let Some(text) = prompt_text(&v["message"]["content"]) {
-                t.turns += 1;
-                t.last_prompt = Some(snippet(&text));
+                note_prompt(t, &text);
             }
         }
         Some("assistant") => {
-            note_common(t, &v);
+            note_common(t, v);
             let msg = &v["message"];
-            state.ended = msg["stop_reason"] == "end_turn";
-            if let Some(text) = reply_text(&msg["content"]) {
-                t.last_reply = Some(snippet(&text));
+            // `tool_use` and `pause_turn` continue the turn; any other stop reason ends it.
+            state.ended = (msg["stop_reason"].as_str())
+                .is_some_and(|r| !matches!(r, "tool_use" | "pause_turn"));
+            if let Some(text) = msg["content"].as_array().map(|b| super::join_text(b)) {
+                if !text.is_empty() {
+                    t.last_reply = Some(super::snippet(&text));
+                }
             }
             let id = msg["id"].as_str().map(str::to_string);
             // Copies of one message repeat its usage, and later copies carry the final output count:
@@ -249,34 +110,22 @@ fn apply_line(state: &mut FileState, line: &str) {
                 }
             }
             state.last_message_id = id;
-            let (Some(model), Some(ts)) = (msg["model"].as_str(), timestamp(&v)) else {
+            let (Some(model), Some(ts)) = (msg["model"].as_str(), timestamp(v)) else {
                 return;
             };
             let usage = usage_of(&msg["usage"]);
             if usage.total() == 0 {
                 return;
             }
-            let day = local_day(ts);
-            *t.usage
-                .entry(day.clone())
-                .or_default()
-                .entry(model.to_string())
-                .or_default() += usage;
-            state.last_usage = Some((day, model.to_string(), usage));
+            super::add_usage(t, ts, model, usage);
+            state.last_usage = Some((super::local_day(ts), model.to_string(), usage));
         }
         _ => {}
     }
 }
 
-fn timestamp(v: &Value) -> Option<DateTime<Utc>> {
-    v["timestamp"].as_str()?.parse().ok()
-}
-
 fn note_common(t: &mut Thread, v: &Value) {
-    if let Some(ts) = timestamp(v) {
-        t.first_ts.get_or_insert(ts);
-        t.last_ts = Some(t.last_ts.map_or(ts, |last| last.max(ts)));
-    }
+    note_ts(t, timestamp(v));
     if let Some(cwd) = v["cwd"].as_str() {
         t.cwd = Some(cwd.to_string());
     }
@@ -287,35 +136,13 @@ fn note_common(t: &mut Thread, v: &Value) {
 
 /// A real prompt is a string, or text blocks without tool results.
 fn prompt_text(content: &Value) -> Option<String> {
-    if let Some(s) = content.as_str() {
-        return Some(s.to_string());
-    }
-    let blocks = content.as_array()?;
-    if blocks.iter().any(|b| b["type"] == "tool_result") {
+    if content
+        .as_array()
+        .is_some_and(|b| b.iter().any(|b| b["type"] == "tool_result"))
+    {
         return None;
     }
-    let text = join_text(blocks);
-    (!text.is_empty()).then_some(text)
-}
-
-fn reply_text(content: &Value) -> Option<String> {
-    let text = join_text(content.as_array()?);
-    (!text.is_empty()).then_some(text)
-}
-
-fn join_text(blocks: &[Value]) -> String {
-    blocks
-        .iter()
-        .filter(|b| b["type"] == "text")
-        .filter_map(|b| b["text"].as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_string()
-}
-
-fn snippet(text: &str) -> String {
-    text.chars().take(SNIPPET_CHARS).collect()
+    super::text_of(content)
 }
 
 /// Splits cache writes by TTL when Claude Code reports it; otherwise counts them as 5-minute writes.
@@ -341,6 +168,8 @@ fn usage_of(u: &Value) -> Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transcripts::{local_day, Kind, Source};
+    use chrono::{DateTime, Utc};
     use std::io::Write;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/claude-session.jsonl");
@@ -396,7 +225,7 @@ mod tests {
     #[test]
     fn parses_a_session_and_dedupes_usage() {
         let (tmp, claude, _) = setup(FIXTURE);
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         let threads = src.refresh();
         assert_eq!(threads.len(), 1);
         expect_full(&threads[0]);
@@ -407,7 +236,7 @@ mod tests {
         let lines: Vec<&str> = FIXTURE.lines().collect();
         let first = lines[..5].join("\n") + "\n";
         let (tmp, claude, file) = setup(&first);
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         assert_eq!(src.refresh()[0].turns, 1);
         // half-written line: not counted yet
         let mut f = std::fs::OpenOptions::new()
@@ -427,7 +256,7 @@ mod tests {
     #[test]
     fn shrunk_file_is_reread() {
         let (tmp, claude, file) = setup(FIXTURE);
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         src.refresh();
         let first_two: String = FIXTURE.lines().take(3).map(|l| format!("{l}\n")).collect();
         std::fs::write(&file, first_two).unwrap();
@@ -440,8 +269,8 @@ mod tests {
     fn index_survives_restart() {
         let (tmp, claude, _) = setup(FIXTURE);
         let index = tmp.path().join("index.json");
-        ClaudeSource::new(&claude, index.clone()).refresh();
-        let mut again = ClaudeSource::new(&claude, index);
+        Source::new(Kind::Claude, &claude, index.clone()).refresh();
+        let mut again = Source::new(Kind::Claude, &claude, index);
         assert!(again.files.values().all(|f| f.offset > 0));
         expect_full(&again.refresh()[0]);
     }
@@ -449,7 +278,7 @@ mod tests {
     #[test]
     fn counts_corrupt_lines() {
         let (tmp, claude, _) = setup(FIXTURE);
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         src.refresh();
         assert_eq!(src.files.values().map(|f| f.bad_lines).sum::<u64>(), 1);
     }
@@ -469,7 +298,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         let threads = src.refresh();
         assert_eq!(threads.len(), 1);
         let t = &threads[0];
@@ -513,7 +342,7 @@ mod tests {
             )
         };
         let (tmp, claude, file) = setup(&format!("{}\n", line(100)));
-        let mut src = ClaudeSource::new(&claude, tmp.path().join("index.json"));
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         src.refresh();
         let mut f = std::fs::OpenOptions::new()
             .append(true)
@@ -528,7 +357,11 @@ mod tests {
     #[test]
     fn missing_claude_dir_gives_no_threads() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut src = ClaudeSource::new(&tmp.path().join("nope"), tmp.path().join("index.json"));
+        let mut src = Source::new(
+            Kind::Claude,
+            &tmp.path().join("nope"),
+            tmp.path().join("index.json"),
+        );
         assert!(src.refresh().is_empty());
     }
 }

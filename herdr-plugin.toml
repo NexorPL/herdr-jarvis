@@ -1,7 +1,7 @@
 # herdr-plugin.toml — Jarvis: mission control for herdr.
 id = "jarvis"
 name = "Jarvis"
-version = "0.4.0"
+version = "0.5.0"
 min_herdr_version = "0.9.0"
 description = "Mission control for herdr: animated big-picture core, projects by path, threads, timeline and token usage."
 platforms = ["linux", "macos", "windows"]
@@ -23,7 +23,8 @@ command = ["./target/release/jarvis", "ensure-collector"]
 id = "open"
 title = "Open Jarvis"
 contexts = ["workspace"]
-command = ["herdr", "plugin", "pane", "open", "--plugin", "jarvis", "--entrypoint", "core", "--focus"]
+# Jarvis talks to herdr's socket itself: no `herdr` needed on PATH.
+command = ["./target/release/jarvis", "open"]
 
 [[panes]]
 id = "core"

@@ -44,8 +44,13 @@ impl Pane {
         self.terminal_title_stripped.as_deref().unwrap_or("")
     }
 
+    /// Pi's integration reports the session file (`<timestamp>_<id>.jsonl`) rather than the id.
     pub fn session_id(&self) -> Option<&str> {
-        self.agent_session.as_ref().map(|s| s.value.as_str())
+        let v = self.agent_session.as_ref()?.value.as_str();
+        Some(match v.strip_suffix(".jsonl") {
+            Some(path) => path.rsplit('_').next().unwrap_or(v),
+            None => v,
+        })
     }
 }
 
@@ -56,6 +61,14 @@ pub struct Workspace {
     pub label: Option<String>,
     #[serde(default)]
     pub number: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Tab {
+    pub tab_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
@@ -69,7 +82,31 @@ pub struct Snapshot {
     #[serde(default)]
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
+    pub tabs: Vec<Tab>,
+    #[serde(default)]
     pub panes: Vec<Pane>,
     #[serde(default)]
     pub agents: Vec<Pane>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pi_session_path_gives_its_id() {
+        let pane = |value: &str| Pane {
+            agent_session: Some(AgentSession {
+                value: value.into(),
+            }),
+            ..serde_json::from_value(serde_json::json!({
+                "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1", "agent_status": "idle"
+            }))
+            .unwrap()
+        };
+        let path =
+            r"C:\Users\u\.pi\agent\sessions\--C--my_app--\2026-10-08T10-00-00-000Z_9f2c.jsonl";
+        assert_eq!(pane(path).session_id(), Some("9f2c"));
+        assert_eq!(pane("sess-a").session_id(), Some("sess-a"));
+    }
 }

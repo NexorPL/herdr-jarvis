@@ -69,6 +69,22 @@ pub fn ensure_collector() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `jarvis open`, the `jarvis.open` action: focus the running Jarvis, or open one in a new tab.
+/// Talks to herdr's socket itself, so it works when no `herdr` is on PATH (herdr run through
+/// npx, for one).
+pub fn open() -> anyhow::Result<()> {
+    let state = paths::state_dir();
+    let socket = herdr::socket_path();
+    if is_running(&state.join("tui.lock")) {
+        let pane = std::fs::read_to_string(state.join("tui.pane")).unwrap_or_default();
+        if !pane.is_empty() && herdr::focus_pane(&socket, &pane).is_ok() {
+            return Ok(());
+        }
+    }
+    let open = json!({"plugin_id": "jarvis", "entrypoint": "core", "focus": true});
+    herdr::client::request(&socket, "plugin.pane.open", open).map(|_| ())
+}
+
 /// herdr restores a session's layout but not plugin processes, so after a restart the "Jarvis" tab
 /// holds a plain shell. Unless a Jarvis is running, replace those leftovers with a live one, in the
 /// same workspace and without taking the focus.
@@ -78,13 +94,13 @@ fn ensure_tui(state: &Path) -> anyhow::Result<()> {
     }
     let socket = herdr::socket_path();
     let snap = herdr::client::snapshot(&socket)?;
-    let stale = stale_jarvis_panes(&snap);
-    for pane in &stale {
-        herdr::client::request(&socket, "pane.close", json!({"pane_id": pane.pane_id}))?;
+    let stale = stale_jarvis(&snap);
+    for (method, params) in &stale.close {
+        herdr::client::request(&socket, method, params.clone())?;
     }
     let mut open = json!({"plugin_id": "jarvis", "entrypoint": "core", "focus": false});
-    if let Some(pane) = stale.first() {
-        open["workspace_id"] = json!(pane.workspace_id);
+    if let Some(ws) = &stale.workspace {
+        open["workspace_id"] = json!(ws);
     }
     herdr::client::request(&socket, "plugin.pane.open", open)?;
     // herdr activates the new tab shortly after the request returns, even with focus=false; give
@@ -92,19 +108,63 @@ fn ensure_tui(state: &Path) -> anyhow::Result<()> {
     if let Some(focused) = snap
         .focused_pane_id
         .as_deref()
-        .filter(|f| stale.iter().all(|p| p.pane_id != *f))
+        .filter(|f| !stale.panes.iter().any(|p| p == f))
     {
         spawn_detached(&["focus", focused])?;
     }
     Ok(())
 }
 
-/// Panes left over from an earlier Jarvis: herdr labels plugin panes with the manifest title.
-pub fn stale_jarvis_panes(snap: &herdr::Snapshot) -> Vec<&herdr::Pane> {
-    snap.panes
-        .iter()
-        .filter(|p| p.label.as_deref() == Some("Jarvis"))
-        .collect()
+/// What an earlier Jarvis left behind, and how to close it.
+pub struct Stale {
+    /// `tab.close` / `pane.close` requests.
+    pub close: Vec<(&'static str, serde_json::Value)>,
+    /// Panes that go away with them.
+    pub panes: Vec<String>,
+    /// Where the new Jarvis tab opens: the workspace of the first leftover.
+    pub workspace: Option<String>,
+}
+
+/// herdr restores a "Jarvis" tab after a restart, labels its pane with the manifest title, and
+/// plugins such as a sidebar add their own (labelled) panes to it. A tab holding only plugin panes
+/// is closed whole, so no empty "Jarvis" tab is left; elsewhere only the Jarvis pane is.
+pub fn stale_jarvis(snap: &herdr::Snapshot) -> Stale {
+    let jarvis = |p: &herdr::Pane| p.label.as_deref() == Some("Jarvis");
+    let mut stale = Stale {
+        close: Vec::new(),
+        panes: Vec::new(),
+        workspace: None,
+    };
+    for tab in &snap.tabs {
+        let panes: Vec<&herdr::Pane> = snap
+            .panes
+            .iter()
+            .filter(|p| p.tab_id == tab.tab_id)
+            .collect();
+        let only_plugins = panes.iter().all(|p| p.label.is_some());
+        if only_plugins
+            && (tab.label.as_deref() == Some("Jarvis") || panes.iter().any(|p| jarvis(p)))
+        {
+            stale
+                .close
+                .push(("tab.close", json!({"tab_id": tab.tab_id})));
+            stale.panes.extend(panes.iter().map(|p| p.pane_id.clone()));
+            stale
+                .workspace
+                .get_or_insert_with(|| tab.workspace_id.clone());
+            continue;
+        }
+        for p in panes.into_iter().filter(|p| jarvis(p)) {
+            stale
+                .close
+                .push(("pane.close", json!({"pane_id": p.pane_id})));
+            stale.panes.push(p.pane_id.clone());
+            stale
+                .workspace
+                .get_or_insert_with(|| p.workspace_id.clone());
+        }
+    }
+    stale
 }
 
 /// Holds an exclusive lock for the life of the returned file; `None` when another process holds it.
@@ -215,22 +275,42 @@ mod tests {
     }
 
     #[test]
-    fn restored_jarvis_panes_are_stale() {
+    fn restored_jarvis_tabs_are_stale() {
         let snap: herdr::Snapshot = serde_json::from_value(serde_json::json!({
             "protocol": 22,
+            "tabs": [
+                {"tab_id": "w8:t1", "workspace_id": "w8", "label": "1"},
+                {"tab_id": "w8:t2", "workspace_id": "w8", "label": "Jarvis"},
+                {"tab_id": "w8:t4", "workspace_id": "w8", "label": "Jarvis"},
+                {"tab_id": "w8:t5", "workspace_id": "w8", "label": "mine"}
+            ],
             "panes": [
-                {"pane_id": "w8:pA", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Jarvis", "agent_status": "unknown"},
                 {"pane_id": "w8:pD", "workspace_id": "w8", "tab_id": "w8:t1", "label": "Sidebar", "agent_status": "unknown"},
-                {"pane_id": "w8:p1", "workspace_id": "w8", "tab_id": "w8:t1", "agent_status": "working"}
+                {"pane_id": "w8:p1", "workspace_id": "w8", "tab_id": "w8:t1", "agent_status": "working"},
+                {"pane_id": "w8:pS", "workspace_id": "w8", "tab_id": "w8:t2", "label": "Sidebar", "agent_status": "unknown"},
+                {"pane_id": "w8:pA", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Jarvis", "agent_status": "unknown"},
+                {"pane_id": "w8:pB", "workspace_id": "w8", "tab_id": "w8:t4", "label": "Sidebar", "agent_status": "unknown"},
+                {"pane_id": "w8:pJ", "workspace_id": "w8", "tab_id": "w8:t5", "label": "Jarvis", "agent_status": "unknown"},
+                {"pane_id": "w8:p9", "workspace_id": "w8", "tab_id": "w8:t5", "agent_status": "idle"}
             ]
         }))
         .unwrap();
-        let stale = stale_jarvis_panes(&snap);
-        assert_eq!(stale.len(), 1);
+        let stale = stale_jarvis(&snap);
+        let close: Vec<String> = (stale.close.iter())
+            .map(|(m, p)| {
+                format!(
+                    "{m} {}",
+                    p["tab_id"].as_str().or(p["pane_id"].as_str()).unwrap()
+                )
+            })
+            .collect();
+        // An empty leftover tab and a Jarvis tab close whole; a tab with a user pane keeps it.
         assert_eq!(
-            (stale[0].pane_id.as_str(), stale[0].workspace_id.as_str()),
-            ("w8:pA", "w8")
+            close,
+            ["tab.close w8:t2", "tab.close w8:t4", "pane.close w8:pJ"]
         );
+        assert_eq!(stale.panes, ["w8:pS", "w8:pA", "w8:pB", "w8:pJ"]);
+        assert_eq!(stale.workspace.as_deref(), Some("w8"));
     }
 
     #[cfg(windows)]

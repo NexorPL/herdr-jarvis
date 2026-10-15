@@ -11,8 +11,8 @@
 
 **Mission control for [herdr](https://herdr.dev).** One keypress opens Jarvis in its own tab, and it stays
 open while you work. Its animated core: every project with herdr activity branches out of it, showing which agents are working,
-which are done and which are blocked on you. Drill into a project for its agents, Claude Code threads,
-event timeline and token cost.
+which are done and which are blocked on you. Drill into a project for its agents, their threads (Claude Code, Codex,
+Copilot CLI, Pi), event timeline and token cost.
 
 ![Jarvis: the core, a project's agents and a prompt sent from Jarvis](docs/images/jarvis.gif)
 
@@ -36,16 +36,37 @@ herdr plugin action invoke jarvis.open
 ```
 
 Jarvis opens in its own tab and stays open; `q` closes it. herdr does not list plugin actions in its
-menus, so for everyday use bind a key in herdr's `config.toml` and reload it (global menu →
-`reload config`). If Jarvis is already open, the same key jumps to its tab instead of starting a second
-one:
+menus and a plugin cannot bind keys itself, so for everyday use bind one in herdr's `config.toml`
+(`%APPDATA%\herdr\config.toml` on Windows, `~/.config/herdr/config.toml` elsewhere) and reload it
+(global menu → `reload config`). If Jarvis is already open, the same key jumps to its tab instead of
+starting a second one:
 
 ```toml
 [[keys.command]]
 key = "ctrl+alt+j"  # prefix+j is taken: it moves to the pane below
-type = "shell"
-command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
+type = "plugin_action"
+command = "jarvis.open"
+description = "open Jarvis"
 ```
+
+The action runs Jarvis's own binary, which talks to herdr's socket, so it also works when the `herdr`
+command is not on `PATH` (herdr started through `npx`, for one). `herdr config check` validates the file.
+
+## Update
+
+herdr has no update command; install again to fetch the latest release:
+
+```bash
+herdr plugin install NexorPL/herdr-jarvis
+```
+
+Then stop the old Jarvis processes, the collector and an open overlay, so the new binary takes over
+(on Windows they also keep the old one locked): `pkill jarvis` on Linux and macOS,
+`taskkill /IM jarvis.exe /F` on Windows. Open Jarvis again; it starts a new collector. Your config, ideas
+and run targets live in the plugin config and state directories.
+
+For a linked checkout (`herdr plugin link`): stop the processes the same way, then `git pull` and
+`cargo build --release`.
 
 ## What you see
 
@@ -54,32 +75,55 @@ command = "herdr plugin pane open --plugin jarvis --entrypoint core --focus"
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
   is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a twig
-  out of a project's node for each running Claude Code subagent of its agents (`· N sub` in the node); a
+  out of a project's node for each running subagent of its agents (`· N sub` in the node); a
   feed of the latest events at the bottom.
-- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage and Ideas for that project.
-  The side panel of an agent lists the subagents its session spawned, running first.
-- **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage.
+- **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
+  Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
+  subagent its session spawned, running first.
+- **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
+  share the whole screen, in the agent's own colors. `G` shows every project's agents. `Enter` on a
+  card types into that agent right there: every key goes to it (`Ctrl+C` interrupts it) and the
+  card shows its whole screen until `Esc`. `g` jumps to the agent's pane; `p`, `R` and `x` work as in
+  the Agents list.
+- **Panels**: `v` swaps the core for the cards of every agent, with no tabs; `Esc` or `v` goes back.
+  Jarvis opens on the one you used last (also set in the options, `o`).
+- **All projects**: `A` agents, `T` threads, `L` timeline, `U` usage, `G` live.
 - **Ideas**: a fifth tab with a list of ideas per project (name, description, status todo/doing/done), stored in the plugin
   state directory (`ideas.json`). `I` shows the ideas of every project.
+- **New agents**: `N` starts an agent (Claude Code, Codex, Copilot CLI, Pi or any other agent herdr
+  knows) in a new herdr workspace: pick the agent, the folder and the workspace name. The folder is the
+  selected agent's worktree or the open project, else the default from the options (`o`), else your
+  home directory. `R` on an agent renames its workspace.
 - **Run targets**: `x` opens a picker of the project's processes; add, edit and start them from there
   (see below).
 
-Projects are grouped by git repository; linked worktrees sit under their main repository. Threads and
-usage come from Claude Code transcripts (`~/.claude/projects`); other agents appear in the tree and the
-timeline, without threads or cost.
+Projects are grouped by git repository; linked worktrees sit under their main repository. Threads,
+subagents and usage come from the session files each agent writes:
+
+| Agent | Sessions | Moved by |
+|---|---|---|
+| Claude Code | `~/.claude/projects` | `claude_dir`, `CLAUDE_CONFIG_DIR` |
+| Codex | `~/.codex/sessions` | `CODEX_HOME` |
+| GitHub Copilot CLI | `~/.copilot/session-state` | `COPILOT_HOME` |
+| Pi | `~/.pi/agent/sessions` | `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR` |
+
+Copilot CLI records token counts only when a session exits, so a running Copilot session shows its
+usage once it closes. Other agents appear in the tree and the timeline, without threads or cost.
 
 ## Keys
 
 | Where | Keys |
 |---|---|
-| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` all-project views |
-| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy `claude --resume <id>` for a finished thread · `Tab` / `1`–`5` switch views |
-| Agents | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
+| Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` `G` all-project views |
+| Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`6` switch views |
+| Live, panels | `Enter` type into the selected agent, `Esc` stops · `g` go to its pane · arrows move between cards |
+| Agents, Live | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |
 | Forms | `Tab` / `Shift+Tab` switch field · `←` `→` `Home` `End` move · `Ctrl+←` `Ctrl+→` by word · `Backspace` / `Delete` · `Ctrl+Backspace` or `Ctrl+W` delete a word · `Enter` save · `Esc` cancel |
 | Delete popup | `←` `→` / `Tab` / `h` `l` switch button (No is preselected) · `Enter` confirm · `y` yes · `n` / `Esc` no |
+| New agents | `N` new agent in a new workspace · `R` (Agents, Live) rename the agent's workspace · `o` options: default folder, agent and view · `v` core or panels |
 | Anywhere | `Esc` back · `r` refresh · `?` help · `q` close Jarvis |
 
 ## Run targets
@@ -89,7 +133,7 @@ agent row, then `n` to add a target with a name, a command and an optional worki
 the project root, or the agent's worktree when it works in one; empty means the root). `e` edits and `d`
 deletes the target under the cursor.
 
-Targets are stored in `targets.json` in the plugin state directory. An environment for a target can be
+Targets are stored in `targets.json` in the plugin state directory (options in `options.json`). An environment for a target can be
 added there by hand:
 
 ```json
@@ -120,14 +164,15 @@ cache_write_5m = 5.0
 cache_write_1h = 8.0
 ```
 
-Costs are estimates from public per-token prices, shown with `≈`.
+Costs are estimates from public per-token prices, shown with `≈`. The built-in table covers Claude
+models; add others (Codex's GPT models, say) under `[pricing."<model>"]`, or their cost shows as `?`.
 
 ## How it works
 
 `jarvis collect` starts with herdr (detached, single instance) and records agent state changes to
 daily JSONL files in the plugin state directory, so the timeline covers time when the overlay was
 closed. herdr restores a session's layout but not plugin processes, so on startup Jarvis also replaces
-the restored, empty "Jarvis" tab with a live one (without taking the focus). Jarvis reads herdr's socket API, an incremental index of Claude Code transcripts and those
+the restored, empty "Jarvis" tab with a live one (without taking the focus). Jarvis reads herdr's socket API, an incremental index of the agents' session files and those
 files. Nothing leaves your machine.
 
 ## Development

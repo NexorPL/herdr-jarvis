@@ -11,8 +11,68 @@ use crate::run::{self, Layout, Step, Target};
 use crate::transcripts::SubAgent;
 use chrono::{DateTime, Duration, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Agents herdr can start (`agent.start` kinds).
+pub const AGENT_KINDS: [&str; 24] = [
+    "claude",
+    "codex",
+    "copilot",
+    "pi",
+    "opencode",
+    "gemini",
+    "cursor",
+    "devin",
+    "agy",
+    "cline",
+    "omp",
+    "mastracode",
+    "kimi",
+    "kiro",
+    "droid",
+    "amp",
+    "grok",
+    "hermes",
+    "kilo",
+    "qodercli",
+    "qwen",
+    "letta",
+    "maki",
+    "muse",
+];
+
+/// Settings made in Jarvis (`o`), stored in the state directory.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Options {
+    /// Where a new agent starts when no project is open; empty means the home directory.
+    #[serde(default)]
+    pub default_dir: String,
+    #[serde(default = "default_agent")]
+    pub default_agent: String,
+    /// The home screen: `core` (the animated core) or `panels` (the Live cards of every agent).
+    #[serde(default = "default_view")]
+    pub view: String,
+}
+
+fn default_agent() -> String {
+    "claude".into()
+}
+
+fn default_view() -> String {
+    "core".into()
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            default_dir: String::new(),
+            default_agent: default_agent(),
+            view: default_view(),
+        }
+    }
+}
 
 /// Boot animation length in 33 ms ticks (~0.8 s).
 pub const BOOT_TICKS: u64 = 24;
@@ -24,15 +84,18 @@ pub enum Tab {
     Timeline,
     Usage,
     Ideas,
+    /// The agents as cards showing their screens.
+    Live,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Agents,
         Tab::Threads,
         Tab::Timeline,
         Tab::Usage,
         Tab::Ideas,
+        Tab::Live,
     ];
 
     pub fn title(self) -> &'static str {
@@ -42,20 +105,31 @@ impl Tab {
             Tab::Timeline => "Timeline",
             Tab::Usage => "Usage",
             Tab::Ideas => "Ideas",
+            Tab::Live => "Live",
         }
     }
 
     /// Only agents and timeline events have a state to filter by.
     pub fn has_state(self) -> bool {
-        matches!(self, Tab::Agents | Tab::Timeline)
+        matches!(self, Tab::Agents | Tab::Timeline | Tab::Live)
+    }
+
+    /// A list of agents: Enter, `p` and `x` act on the selected one.
+    pub fn lists_agents(self) -> bool {
+        matches!(self, Tab::Agents | Tab::Live)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
     Core,
-    Project { key: String, tab: Tab },
+    Project {
+        key: String,
+        tab: Tab,
+    },
     Global(Tab),
+    /// Only the Live cards of every agent, no tabs (`v`).
+    Panels,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +190,18 @@ pub enum Action {
         pane_id: String,
         input: Input,
     },
+    /// `options` changed; write them to disk.
+    SaveOptions,
+    /// Start `agent` in a new herdr workspace labelled `name`, in `cwd`.
+    Spawn {
+        agent: String,
+        cwd: String,
+        name: String,
+    },
+    RenameWorkspace {
+        workspace_id: String,
+        label: String,
+    },
     /// Send these steps to herdr, then focus the first new pane.
     Run {
         workspace_id: Option<String>,
@@ -152,6 +238,24 @@ impl Input {
             _ => None,
         }
     }
+
+    /// A key typed into an agent from its card: text as text, so any character and case arrive as
+    /// typed; keys herdr has no name for go as the terminal's escape sequences.
+    pub fn typed(key: KeyEvent) -> Option<Input> {
+        let text = |s: &str| Some(Input::Text(s.into()));
+        match key.code {
+            KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Input::from_key(key)
+            }
+            KeyCode::Char(c) => text(&c.to_string()),
+            KeyCode::Delete => text("\x1b[3~"),
+            KeyCode::Home => text("\x1b[H"),
+            KeyCode::End => text("\x1b[F"),
+            KeyCode::PageUp => text("\x1b[5~"),
+            KeyCode::PageDown => text("\x1b[6~"),
+            _ => Input::from_key(key),
+        }
+    }
 }
 
 /// The answer popup over a blocked agent: its screen, refreshed by the event loop; while open
@@ -178,6 +282,12 @@ pub enum FormKind {
     Prompt {
         pane_id: String,
         agent: String,
+    },
+    Options,
+    Spawn,
+    /// Rename the herdr workspace of an agent.
+    Rename {
+        workspace_id: String,
     },
 }
 
@@ -298,6 +408,13 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub picker: Option<Picker>,
     pub answer: Option<Answer>,
+    pub options: Options,
+    /// Pane of the agent whose card takes the keys (Enter on a card); Esc leaves.
+    pub typing: Option<String>,
+    /// Columns of the last drawn card grid, so ↑↓ move a row of cards.
+    pub grid_cols: std::cell::Cell<usize>,
+    /// Visible screen text per agent pane, for the Live tab.
+    pub screens: HashMap<String, String>,
     pub targets: Vec<Target>,
 }
 
@@ -338,6 +455,10 @@ impl App {
             confirm: None,
             picker: None,
             answer: None,
+            screens: HashMap::new(),
+            grid_cols: std::cell::Cell::new(1),
+            typing: None,
+            options: Options::default(),
             targets: Vec::new(),
         }
     }
@@ -350,12 +471,22 @@ impl App {
         ) && a.since.is_some_and(|t| t > self.last_left)
     }
 
-    /// Subagents of this agent's Claude session, running first.
-    pub fn subagents(&self, a: &AgentRow) -> Vec<&SubAgent> {
-        let mut subs: Vec<&SubAgent> = (a.thread.and_then(|i| self.model.threads.get(i)))
-            .map(|t| t.thread.subagents.iter().collect())
+    /// Subagents of this agent's session with whether each still runs, running first.
+    pub fn subagents(&self, a: &AgentRow) -> Vec<(&SubAgent, bool)> {
+        let busy = matches!(
+            a.pane.agent_status,
+            AgentStatus::Working | AgentStatus::Blocked
+        );
+        let mut subs: Vec<(&SubAgent, bool)> = (a.thread.and_then(|i| self.model.threads.get(i)))
+            .map(|t| {
+                t.thread
+                    .subagents
+                    .iter()
+                    .map(|s| (s, s.running(self.now, busy)))
+                    .collect()
+            })
             .unwrap_or_default();
-        subs.sort_by_key(|s| (!s.running(self.now), std::cmp::Reverse(s.last_ts)));
+        subs.sort_by_key(|(s, running)| (!running, std::cmp::Reverse(s.last_ts)));
         subs
     }
 
@@ -363,7 +494,7 @@ impl App {
     pub fn running_subagents(&self, p: &Project) -> usize {
         (p.agents.iter())
             .flat_map(|a| self.subagents(a))
-            .filter(|s| s.running(self.now))
+            .filter(|(_, running)| *running)
             .count()
     }
 
@@ -433,6 +564,7 @@ impl App {
         match &self.screen {
             Screen::Project { tab, .. } | Screen::Global(tab) => *tab,
             Screen::Core => Tab::Agents,
+            Screen::Panels => Tab::Live,
         }
     }
 
@@ -441,12 +573,12 @@ impl App {
         match &self.screen {
             Screen::Project { key, .. } => Some(key),
             Screen::Global(_) => self.project_filter.as_deref(),
-            Screen::Core => None,
+            Screen::Core | Screen::Panels => None,
         }
     }
 
     pub fn today(&self) -> String {
-        crate::transcripts::claude::local_day(self.now)
+        crate::transcripts::local_day(self.now)
     }
 
     pub fn project_name(&self, key: &str) -> String {
@@ -536,7 +668,7 @@ impl App {
 
     pub fn row_count(&self) -> usize {
         match self.tab() {
-            Tab::Agents => self.visible_agents().len(),
+            Tab::Agents | Tab::Live => self.visible_agents().len(),
             Tab::Threads => self.visible_threads().len(),
             Tab::Timeline => self.visible_events().len(),
             Tab::Usage => 0,
@@ -549,6 +681,14 @@ impl App {
             self.model.projects.len()
         } else {
             self.nodes().len()
+        }
+    }
+
+    /// Where Jarvis opens: the core, or the agent panels.
+    pub fn home(&self) -> Screen {
+        match self.options.view.as_str() {
+            "panels" => Screen::Panels,
+            _ => Screen::Core,
         }
     }
 
@@ -581,6 +721,18 @@ impl App {
             self.on_confirm_key(key);
             return;
         }
+        if let Some(pane_id) = &self.typing {
+            match key.code {
+                KeyCode::Esc => self.typing = None,
+                _ => {
+                    self.action = Input::typed(key).map(|input| Action::Input {
+                        pane_id: pane_id.clone(),
+                        input,
+                    })
+                }
+            }
+            return;
+        }
         if let Some(a) = &self.answer {
             match key.code {
                 KeyCode::Esc => self.answer = None,
@@ -610,7 +762,15 @@ impl App {
             KeyCode::Char('L') => self.goto(Screen::Global(Tab::Timeline)),
             KeyCode::Char('U') => self.goto(Screen::Global(Tab::Usage)),
             KeyCode::Char('I') => self.goto(Screen::Global(Tab::Ideas)),
+            KeyCode::Char('G') => self.goto(Screen::Global(Tab::Live)),
             KeyCode::Char('p') => self.prompt_form(),
+            KeyCode::Char('o') => self.options_form(),
+            KeyCode::Char('v') => self.switch_view(),
+            KeyCode::Esc if self.screen == Screen::Panels => self.switch_view(),
+            KeyCode::Char('N') => self.spawn_form(),
+            KeyCode::Char('R') if self.screen != Screen::Core && self.tab().lists_agents() => {
+                self.rename_form()
+            }
             _ if self.screen == Screen::Core => self.on_core_key(key),
             _ => self.on_list_key(key),
         }
@@ -693,11 +853,22 @@ impl App {
         }
     }
 
+    /// Between the core and the panels; Jarvis opens on the last one.
+    fn switch_view(&mut self) {
+        self.options.view = match self.screen {
+            Screen::Panels => "core",
+            _ => "panels",
+        }
+        .into();
+        self.goto(self.home());
+        self.action = Some(Action::SaveOptions);
+    }
+
     fn set_tab(&mut self, tab: Tab) {
         match &mut self.screen {
             Screen::Project { tab: t, .. } => *t = tab,
             Screen::Global(t) => *t = tab,
-            Screen::Core => {}
+            Screen::Core | Screen::Panels => return,
         }
         self.selected_row = 0;
     }
@@ -711,14 +882,42 @@ impl App {
             KeyCode::BackTab => {
                 self.set_tab(Tab::ALL[(tab_index + Tab::ALL.len() - 1) % Tab::ALL.len()])
             }
-            KeyCode::Char(c @ '1'..='5') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
+            KeyCode::Char(c @ '1'..='6') => self.set_tab(Tab::ALL[c as usize - '1' as usize]),
+            // Cards: a row up or down; the last card when the row below is shorter.
+            KeyCode::Up | KeyCode::Char('k') if self.tab() == Tab::Live => {
+                let cols = self.grid_cols.get().max(1);
+                self.selected_row = self
+                    .selected_row
+                    .checked_sub(cols)
+                    .unwrap_or(self.selected_row)
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.tab() == Tab::Live => {
+                let (cols, last) = (
+                    self.grid_cols.get().max(1),
+                    self.row_count().saturating_sub(1),
+                );
+                if self.selected_row / cols < last / cols {
+                    self.selected_row = (self.selected_row + cols).min(last)
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_row = self.selected_row.saturating_sub(1)
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.tab() == Tab::Live => {
+                self.selected_row = self.selected_row.saturating_sub(1)
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.tab() == Tab::Live => {
+                self.selected_row = (self.selected_row + 1).min(self.row_count().saturating_sub(1))
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.selected_row = (self.selected_row + 1).min(self.row_count().saturating_sub(1))
             }
             KeyCode::Enter => self.activate_row(),
+            KeyCode::Char('g') if self.tab() == Tab::Live => {
+                if let Some((_, a)) = self.visible_agents().get(self.selected_row) {
+                    self.action = Some(Action::FocusPane(a.pane.pane_id.clone()));
+                }
+            }
             KeyCode::Char('/') => self.search_editing = true,
             KeyCode::Char('s') if self.tab().has_state() => {
                 self.state_filter = match self.state_filter {
@@ -803,6 +1002,10 @@ impl App {
     fn activate_row(&mut self) {
         let row = self.selected_row;
         match self.tab() {
+            // A card takes the keys: type into its agent right there.
+            Tab::Live => {
+                self.typing = (self.visible_agents().get(row)).map(|(_, a)| a.pane.pane_id.clone());
+            }
             Tab::Agents => {
                 if let Some(id) = self
                     .visible_agents()
@@ -816,11 +1019,10 @@ impl App {
                 let target = self
                     .visible_threads()
                     .get(row)
-                    .map(|t| (t.live_pane.clone(), t.thread.session_id.clone()));
+                    .map(|t| (t.live_pane.clone(), t.thread.resume_command()));
                 match target {
                     Some((Some(pane), _)) => self.action = Some(Action::FocusPane(pane)),
-                    Some((None, session)) => {
-                        let cmd = format!("claude --resume {session}");
+                    Some((None, cmd)) => {
                         self.status = Some(format!("{cmd}  (copied)"));
                         self.action = Some(Action::Copy(cmd));
                     }
@@ -835,7 +1037,7 @@ impl App {
     /// The prompt form for the selected agent, or the answer popup when it waits on a question
     /// (herdr refuses prompts then).
     fn prompt_form(&mut self) {
-        let row = (self.screen != Screen::Core && self.tab() == Tab::Agents)
+        let row = (self.screen != Screen::Core && self.tab().lists_agents())
             .then(|| self.visible_agents().get(self.selected_row).copied())
             .flatten();
         let Some((p, a)) = row else {
@@ -864,6 +1066,67 @@ impl App {
         });
     }
 
+    fn open_form(&mut self, title: &str, kind: FormKind, fields: Vec<(&'static str, String)>) {
+        self.form = Some(Form {
+            title: title.into(),
+            kind,
+            fields,
+            focus: 0,
+            cursor: usize::MAX,
+            error: None,
+        });
+    }
+
+    fn options_form(&mut self) {
+        let o = self.options.clone();
+        self.open_form(
+            " options · new agents ",
+            FormKind::Options,
+            vec![
+                ("folder", o.default_dir),
+                ("agent", o.default_agent),
+                ("view", o.view),
+            ],
+        );
+    }
+
+    /// A new agent starts in the selected agent's worktree, the open project, the default
+    /// folder from the options, or the home directory, in that order.
+    fn spawn_form(&mut self) {
+        let open = (self.screen != Screen::Core)
+            .then(|| self.run_context())
+            .flatten();
+        let dir = (open.map(|c| c.root))
+            .filter(|r| !r.as_os_str().is_empty())
+            .or_else(|| {
+                Some(PathBuf::from(&self.options.default_dir)).filter(|d| !d.as_os_str().is_empty())
+            })
+            .or_else(crate::paths::home_dir)
+            .unwrap_or_default();
+        let name = (dir.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let dir = dir.to_string_lossy().to_string();
+        let agent = self.options.default_agent.clone();
+        self.open_form(
+            " new agent ",
+            FormKind::Spawn,
+            vec![("agent", agent), ("folder", dir), ("name", name)],
+        );
+    }
+
+    fn rename_form(&mut self) {
+        let Some((_, a)) = self.visible_agents().get(self.selected_row).copied() else {
+            return;
+        };
+        let (workspace_id, label) = (a.pane.workspace_id.clone(), a.workspace.clone());
+        self.open_form(
+            " rename workspace ",
+            FormKind::Rename { workspace_id },
+            vec![("name", label)],
+        );
+    }
+
     /// Pane of a target that is already running, found by its herdr label.
     pub fn running_pane(&self, project: &str, target: &str) -> Option<&String> {
         self.model
@@ -873,7 +1136,7 @@ impl App {
 
     /// The selected agent (Agents tab) or the open project, with the agent's worktree preferred as root.
     fn run_context(&self) -> Option<RunContext> {
-        let row = if self.tab() == Tab::Agents {
+        let row = if self.tab().lists_agents() {
             self.visible_agents().get(self.selected_row).copied()
         } else {
             None
@@ -1127,9 +1390,31 @@ impl App {
             FormKind::Idea { .. } => (1, "an idea needs a name"),
             FormKind::Target { .. } => (2, "a target needs a name and a command"),
             FormKind::Prompt { .. } => (1, "type a prompt"),
+            FormKind::Options => (3, "pick a default agent and a view"),
+            FormKind::Spawn => (3, "a new agent needs an agent, a folder and a name"),
+            FormKind::Rename { .. } => (1, "type a name"),
         };
-        if v[..required].iter().any(String::is_empty) {
-            form.error = Some(refusal.into());
+        let (agent, dir) = match form.kind {
+            FormKind::Options => (v[1].as_str(), v[0].as_str()),
+            FormKind::Spawn => (v[0].as_str(), v[1].as_str()),
+            _ => ("", ""),
+        };
+        let refusal = if v[..required].iter().any(String::is_empty) {
+            Some(refusal.to_string())
+        } else if !agent.is_empty() && !AGENT_KINDS.contains(&agent) {
+            Some(format!(
+                "unknown agent; try {}…",
+                AGENT_KINDS[..4].join(", ")
+            ))
+        } else if !dir.is_empty() && !crate::paths::expand_tilde(Path::new(dir)).is_dir() {
+            Some("no such folder".into())
+        } else if form.kind == FormKind::Options && !["core", "panels"].contains(&v[2].as_str()) {
+            Some("view is core or panels".into())
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            form.error = Some(refusal);
             self.form = Some(form);
             return;
         }
@@ -1180,6 +1465,31 @@ impl App {
                     pane_id,
                     agent,
                     text: v[0].clone(),
+                });
+            }
+            FormKind::Options => {
+                self.options = Options {
+                    default_dir: v[0].clone(),
+                    default_agent: v[1].clone(),
+                    view: v[2].clone(),
+                };
+                if matches!(self.screen, Screen::Core | Screen::Panels) {
+                    self.goto(self.home());
+                }
+                self.action = Some(Action::SaveOptions);
+            }
+            FormKind::Spawn => {
+                let cwd = crate::paths::expand_tilde(Path::new(&v[1]));
+                self.action = Some(Action::Spawn {
+                    agent: v[0].clone(),
+                    cwd: cwd.to_string_lossy().to_string(),
+                    name: v[2].clone(),
+                });
+            }
+            FormKind::Rename { workspace_id } => {
+                self.action = Some(Action::RenameWorkspace {
+                    workspace_id,
+                    label: v[0].clone(),
                 });
             }
         }
@@ -1616,14 +1926,60 @@ mod tests {
     }
 
     #[test]
+    fn live_tab_acts_on_agents_like_the_agents_tab() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+        assert_eq!(app.row_count(), app.visible_agents().len());
+        key(&mut app, KeyCode::Char('g'));
+        assert!(matches!(app.action.take(), Some(Action::FocusPane(_))));
+        // Enter types into the selected agent: every key goes to it until Esc.
+        let pane = app.visible_agents()[0].1.pane.pane_id.clone();
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.typing.as_deref(), Some(pane.as_str()));
+        let sent = |app: &mut App, k: KeyEvent| {
+            app.on_key(k);
+            match app.action.take() {
+                Some(Action::Input { pane_id, input }) if pane_id == pane => input,
+                other => panic!("{other:?}"),
+            }
+        };
+        let k = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Char('A'))),
+            Input::Text("A".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Char('q'))),
+            Input::Text("q".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Enter)),
+            Input::Key("enter".into())
+        );
+        assert_eq!(
+            sent(&mut app, k(KeyCode::Delete)),
+            Input::Text("[3~".into())
+        );
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(sent(&mut app, ctrl_c), Input::Key("ctrl+c".into()));
+        assert!(!app.quit);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.typing, None);
+        assert_eq!(app.screen, Screen::Global(Tab::Live));
+    }
+
+    #[test]
     fn ideas_tab_is_reachable_like_the_others() {
         let mut app = sample_app();
         key(&mut app, KeyCode::Char('I'));
         assert_eq!(app.screen, Screen::Global(Tab::Ideas));
         key(&mut app, KeyCode::Tab);
+        assert_eq!(app.tab(), Tab::Live);
+        key(&mut app, KeyCode::Tab);
         assert_eq!(app.tab(), Tab::Agents);
         key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.tab(), Tab::Ideas);
+        assert_eq!(app.tab(), Tab::Live);
         key(&mut app, KeyCode::Char('1'));
         key(&mut app, KeyCode::Char('5'));
         assert_eq!(app.tab(), Tab::Ideas);
@@ -2125,5 +2481,149 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(app.picker.is_none());
         assert!(matches!(app.screen, Screen::Project { .. }));
+    }
+
+    fn set_field(app: &mut App, n: usize, value: &str) {
+        app.form.as_mut().unwrap().fields[n].1 = value.into();
+    }
+
+    #[test]
+    fn new_agent_starts_in_the_open_project() {
+        let mut app = sample_app();
+        app.screen = Screen::Project {
+            key: app.model.projects[1].key.clone(),
+            tab: Tab::Agents,
+        };
+        key(&mut app, KeyCode::Char('N'));
+        let form = app.form.clone().unwrap();
+        assert_eq!(form.kind, FormKind::Spawn);
+        assert_eq!(form.fields[0].1, "claude");
+        assert!(form.fields[1].1.ends_with("alpha"));
+        assert_eq!(form.fields[2].1, "alpha");
+        // The sample project is not on disk.
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.form.as_ref().unwrap().error.as_deref(),
+            Some("no such folder")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        set_field(&mut app, 1, &dir.path().to_string_lossy());
+        set_field(&mut app, 0, "vim");
+        key(&mut app, KeyCode::Enter);
+        assert!(app
+            .form
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("unknown agent"));
+        set_field(&mut app, 0, "codex");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.action,
+            Some(Action::Spawn {
+                agent: "codex".into(),
+                cwd: dir.path().to_string_lossy().into(),
+                name: "alpha".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn options_set_where_new_agents_start() {
+        let mut app = sample_app();
+        let dir = tempfile::tempdir().unwrap();
+        key(&mut app, KeyCode::Char('o'));
+        set_field(&mut app, 0, &dir.path().to_string_lossy());
+        set_field(&mut app, 1, "pi");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.action.take(), Some(Action::SaveOptions));
+        assert_eq!(app.options.default_agent, "pi");
+        // On the core no project is open: the default folder and agent apply.
+        key(&mut app, KeyCode::Char('N'));
+        let form = app.form.clone().unwrap();
+        assert_eq!(form.fields[0].1, "pi");
+        assert_eq!(form.fields[1].1, dir.path().to_string_lossy());
+    }
+
+    #[test]
+    fn r_renames_the_selected_agents_workspace() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        key(&mut app, KeyCode::Char('R'));
+        assert_eq!(
+            app.form.as_ref().unwrap().kind,
+            FormKind::Rename {
+                workspace_id: "w2".into()
+            }
+        );
+        set_field(&mut app, 0, "payments");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.action,
+            Some(Action::RenameWorkspace {
+                workspace_id: "w2".into(),
+                label: "payments".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn v_and_esc_switch_between_core_and_panels() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.screen, Screen::Panels);
+        assert_eq!(app.action.take(), Some(Action::SaveOptions));
+        assert_eq!(app.home(), Screen::Panels);
+        // No tabs here.
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.screen, Screen::Panels);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.selected_row, 1);
+        key(&mut app, KeyCode::Char('g'));
+        assert!(matches!(app.action.take(), Some(Action::FocusPane(_))));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Core);
+        assert_eq!(app.home(), Screen::Core);
+        // A project's Esc leads to the core, as before.
+        key(&mut app, KeyCode::Char('v'));
+        app.screen = Screen::Project {
+            key: app.model.projects[0].key.clone(),
+            tab: Tab::Agents,
+        };
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Core);
+    }
+
+    #[test]
+    fn arrows_move_through_the_card_grid() {
+        let mut app = sample_app();
+        // Five agents in two columns: rows [0 1] [2 3] [4].
+        let extra = app.model.projects[0].agents[0].clone();
+        for i in 0..3 {
+            let mut a = extra.clone();
+            a.pane.pane_id = format!("w9:p{i}");
+            app.model.projects[0].agents.push(a);
+        }
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.row_count(), 5);
+        app.grid_cols.set(2);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 2);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_row, 0);
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.selected_row, 0);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.selected_row, 1);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 3);
+        // The row below holds only card 4: down lands on it, and stops there.
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 4);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_row, 4);
     }
 }

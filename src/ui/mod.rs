@@ -1,3 +1,4 @@
+mod ansi;
 pub mod app;
 pub mod hud;
 mod line_edit;
@@ -11,17 +12,19 @@ use crate::herdr::{self, Snapshot, WatchMsg};
 use crate::log::log;
 use crate::pricing::Pricing;
 use crate::projects::Resolver;
-use crate::transcripts::claude::ClaudeSource;
+use crate::transcripts::Source;
 use crate::transcripts::Thread;
 use crate::{collector, demo, model, paths, run, store};
-use app::{Action, App, Input, Screen, BOOT_TICKS};
+use app::{Action, App, Input, Screen, Tab, BOOT_TICKS};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -39,6 +42,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     match &app.screen {
         Screen::Core => hud::draw_core(f, body, app),
         Screen::Project { .. } | Screen::Global(_) => views::draw(f, body, app),
+        Screen::Panels => views::draw_panels(f, body, app),
     }
     if let Some(p) = &app.picker {
         overlays::picker(f, body, app, p);
@@ -59,13 +63,16 @@ pub fn draw(f: &mut Frame, app: &App) {
             " help ",
             &[
                 "Core:   arrows/hjkl move · 1-9 select · Enter open project",
-                "        A agents · T threads · L timeline · U usage · I ideas (all projects)",
-                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-5 views",
-                "        p prompt the selected agent, or answer it when blocked (Agents view)",
+                "        A agents · T threads · L timeline · U usage · I ideas · G live (all projects)",
+                "Lists:  ↑↓/jk move · Enter jump to pane / resume thread · Tab or 1-6 views",
+                "        p prompt the selected agent, or answer it when blocked (Agents, Live)",
                 "        / search · s state filter · w time range · f project filter",
                 "Ideas:  a add · e or Enter edit · d delete (y or Enter on Yes confirms)",
                 "        Space todo → doing → done · s status filter · c show done",
                 "Run:    x run targets (project screen, agent rows) · n new · e edit · d delete",
+                "Agents: N new agent (folder, name) · R rename its workspace · o options",
+                "View:   v switch the home screen: animated core or agent panels",
+                "Cards:  Enter type into the agent (Esc stops) · g go to its pane",
                 "        Esc back · r refresh · q quit · ? this help",
             ],
             app,
@@ -87,7 +94,7 @@ struct SourceUpdate {
 
 /// Transcripts and the event log are read off the UI thread, so a large first index never blocks drawing.
 fn spawn_sources(
-    mut claude: Option<ClaudeSource>,
+    mut sources: Vec<Source>,
     store: events::Log,
     lock: PathBuf,
 ) -> Receiver<SourceUpdate> {
@@ -106,7 +113,7 @@ fn spawn_sources(
             return;
         }
         loop {
-            let threads = claude.as_mut().map(|c| c.refresh()).unwrap_or_default();
+            let threads = sources.iter_mut().flat_map(Source::refresh).collect();
             if tx.send(read(threads)).is_err() {
                 return;
             }
@@ -150,11 +157,8 @@ pub fn run() -> anyhow::Result<()> {
         }
     };
     let watch = herdr::watcher::spawn(herdr::socket_path());
-    let claude = config
-        .claude_dir()
-        .map(|dir| ClaudeSource::new(&dir, state.join("claude-index-v2.json")));
     let sources = spawn_sources(
-        claude,
+        crate::transcripts::sources(config.claude_dir(), &state),
         events::Log::new(state.clone()),
         state.join("collector.lock"),
     );
@@ -168,6 +172,12 @@ pub fn run() -> anyhow::Result<()> {
         Ok(list) => app.targets = list,
         Err(e) => errors.push(e),
     }
+    // A one-item list, so it shares the store's backup of an unreadable file.
+    match store::load(&state.join("options.json")) {
+        Ok(list) => app.options = list.into_iter().next().unwrap_or_default(),
+        Err(e) => errors.push(e),
+    }
+    app.screen = app.home();
     if !errors.is_empty() {
         app.status = Some(errors.join(" · "));
     }
@@ -233,14 +243,50 @@ fn event_loop(
     let mut resolver = Resolver::default();
     let mut dirty = true;
     let mut screen_read = Instant::now();
+    // Results of agent starts and failed keys, which run in threads of their own.
+    let (started_tx, started) = mpsc::channel::<String>();
+    let read_plan = Arc::new(Mutex::new(ReadPlan::default()));
+    let typed = Arc::new(AtomicBool::new(false));
+    let screens = match me.demo {
+        true => mpsc::channel().1,
+        false => spawn_reader(read_plan.clone(), typed.clone()),
+    };
+    let keys = spawn_sender(started_tx.clone(), typed.clone());
     while !app.quit {
+        if let Some(msg) = started.try_iter().last() {
+            app.status = Some(msg);
+        }
+        // Cards show each agent's screen. herdr is read off the UI thread, so typing never waits
+        // on it; the demo makes its screens up.
+        let live = app.screen != Screen::Core && app.tab() == Tab::Live;
+        if me.demo {
+            if live && app.screens.is_empty() {
+                app.screens = (app.visible_agents().into_iter())
+                    .map(|(_, a)| {
+                        let text = demo::screen(a.pane.title(), a.pane.agent_status);
+                        (a.pane.pane_id.clone(), text)
+                    })
+                    .collect();
+            }
+        } else {
+            if let Ok(mut plan) = read_plan.lock() {
+                plan.live = match live {
+                    true => (app.visible_agents().into_iter())
+                        .map(|(_, a)| a.pane.pane_id.clone())
+                        .collect(),
+                    false => Vec::new(),
+                };
+                plan.typing = app.typing.clone();
+            }
+            app.screens.extend(screens.try_iter());
+        }
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
             if a.screen.is_empty() || screen_read.elapsed() >= Duration::from_millis(500) {
                 a.screen = if me.demo {
                     demo::question().into()
                 } else {
-                    read_screen(&a.pane_id)
+                    read_screen(&a.pane_id, "text")
                         .unwrap_or_else(|e| format!("could not read the agent: {e}"))
                 };
                 screen_read = Instant::now();
@@ -293,11 +339,28 @@ fn event_loop(
         let size = terminal.size()?;
         app.compact = size.width < 90 || size.height < 28;
         terminal.draw(|f| draw(f, app))?;
-        let timeout = Duration::from_millis(if app.animating() { 33 } else { 250 });
+        // Typing into a card redraws as fast as animating, so its screen follows the keys.
+        let fast = app.animating() || app.typing.is_some();
+        let timeout = Duration::from_millis(if fast { 33 } else { 250 });
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key);
+            // Every key already waiting is handled before the next draw; keys typed into an agent
+            // go straight to the sender thread, other actions are handled below one at a time.
+            loop {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press {
+                        app.on_key(key);
+                    }
+                }
+                if !me.demo {
+                    if let Some(Action::Input { pane_id, input }) = app.action.take() {
+                        let _ = keys.send((pane_id, input));
+                        // The answer popup shows the agent's reaction on the next pass.
+                        screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
+                            .unwrap_or_else(Instant::now);
+                    }
+                }
+                if app.action.is_some() || app.quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
             }
         }
@@ -309,6 +372,8 @@ fn event_loop(
                         | Action::Prompt { .. }
                         | Action::Input { .. }
                         | Action::Run { .. }
+                        | Action::Spawn { .. }
+                        | Action::RenameWorkspace { .. }
                 )
             )
         {
@@ -323,27 +388,8 @@ fn event_loop(
                 }
             }
             Some(Action::Copy(text)) => copy_to_clipboard(&text),
-            Some(Action::Input { pane_id, input }) => {
-                let sock = herdr::socket_path();
-                let sent = match input {
-                    Input::Key(k) => herdr::client::request(
-                        &sock,
-                        "agent.send_keys",
-                        serde_json::json!({"target": pane_id, "keys": [k]}),
-                    ),
-                    Input::Text(t) => herdr::client::request(
-                        &sock,
-                        "pane.send_text",
-                        serde_json::json!({"pane_id": pane_id, "text": t}),
-                    ),
-                };
-                if let Err(e) = sent {
-                    app.status = Some(format!("could not type into the agent: {e}"));
-                }
-                // Show the agent's reaction on the next pass.
-                screen_read = (Instant::now().checked_sub(Duration::from_millis(400)))
-                    .unwrap_or_else(Instant::now);
-            }
+            // Only in the demo, which drops it above; elsewhere the sender thread has it.
+            Some(Action::Input { .. }) => {}
             Some(Action::Prompt {
                 pane_id,
                 agent,
@@ -360,6 +406,34 @@ fn event_loop(
             Some(Action::SaveIdeas) => {
                 if let Err(e) = store::save(&state.join("ideas.json"), &app.ideas) {
                     app.status = Some(format!("could not save ideas: {e}"));
+                }
+            }
+            Some(Action::SaveOptions) => {
+                let options = [app.options.clone()];
+                if let Err(e) = store::save(&state.join("options.json"), &options) {
+                    app.status = Some(format!("could not save options: {e}"));
+                }
+            }
+            Some(Action::Spawn { agent, cwd, name }) => {
+                app.status = Some(format!("starting {agent} in a new workspace {name}…"));
+                let tx = started_tx.clone();
+                std::thread::spawn(move || {
+                    let msg = match spawn_agent(&agent, &cwd, &name) {
+                        Ok(()) => format!("{agent} started in workspace {name}"),
+                        Err(e) => format!("could not start {agent}: {e}"),
+                    };
+                    let _ = tx.send(msg);
+                });
+            }
+            Some(Action::RenameWorkspace {
+                workspace_id,
+                label,
+            }) => {
+                let params = serde_json::json!({"workspace_id": workspace_id, "label": label});
+                if let Err(e) =
+                    herdr::client::request(&herdr::socket_path(), "workspace.rename", params)
+                {
+                    app.status = Some(format!("could not rename the workspace: {e}"));
                 }
             }
             Some(Action::SaveTargets) => {
@@ -389,9 +463,117 @@ fn event_loop(
     Ok(())
 }
 
+/// Which agent screens the reader thread keeps fresh.
+#[derive(Default)]
+struct ReadPlan {
+    /// The cards on screen, read once a second.
+    live: Vec<String>,
+    /// The card being typed into, read every 80 ms and right after keys go out.
+    typing: Option<String>,
+}
+
+fn spawn_reader(plan: Arc<Mutex<ReadPlan>>, typed: Arc<AtomicBool>) -> Receiver<(String, String)> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut all_read, mut typing_read) =
+            (Instant::now() - Duration::from_secs(5), Instant::now());
+        loop {
+            std::thread::sleep(Duration::from_millis(40));
+            let (live, typing) = match plan.lock() {
+                Ok(p) => (p.live.clone(), p.typing.clone()),
+                Err(_) => return,
+            };
+            let read = |pane: &str| {
+                let text = read_screen(pane, "ansi")
+                    .unwrap_or_else(|e| format!("could not read the agent: {e}"));
+                tx.send((pane.to_string(), text)).is_ok()
+            };
+            if let Some(pane) = &typing {
+                if typed.swap(false, Ordering::Relaxed)
+                    || typing_read.elapsed() >= Duration::from_millis(80)
+                {
+                    if !read(pane) {
+                        return;
+                    }
+                    typing_read = Instant::now();
+                }
+            }
+            if !live.is_empty() && all_read.elapsed() >= Duration::from_secs(1) {
+                for pane in live.iter().filter(|p| Some(*p) != typing.as_ref()) {
+                    if !read(pane) {
+                        return;
+                    }
+                }
+                all_read = Instant::now();
+            }
+        }
+    });
+    rx
+}
+
+/// Sends keys to agents in order; text typed in a burst goes out as one `pane.send_text`.
+fn spawn_sender(
+    status: mpsc::Sender<String>,
+    typed: Arc<AtomicBool>,
+) -> mpsc::Sender<(String, Input)> {
+    let (tx, rx) = mpsc::channel::<(String, Input)>();
+    std::thread::spawn(move || {
+        let sock = herdr::socket_path();
+        while let Ok(first) = rx.recv() {
+            let batch = coalesce(std::iter::once(first).chain(rx.try_iter()));
+            for (pane_id, input) in batch {
+                let sent = match input {
+                    Input::Key(k) => herdr::client::request(
+                        &sock,
+                        "agent.send_keys",
+                        serde_json::json!({"target": pane_id, "keys": [k]}),
+                    ),
+                    Input::Text(t) => herdr::client::request(
+                        &sock,
+                        "pane.send_text",
+                        serde_json::json!({"pane_id": pane_id, "text": t}),
+                    ),
+                };
+                if let Err(e) = sent {
+                    let _ = status.send(format!("could not type into the agent: {e}"));
+                }
+            }
+            typed.store(true, Ordering::Relaxed);
+        }
+    });
+    tx
+}
+
+/// Consecutive text for the same pane joined into one input.
+fn coalesce(inputs: impl Iterator<Item = (String, Input)>) -> Vec<(String, Input)> {
+    let mut batch: Vec<(String, Input)> = Vec::new();
+    for (pane, input) in inputs {
+        match (batch.last_mut(), &input) {
+            (Some((p, Input::Text(t))), Input::Text(more)) if *p == pane => t.push_str(more),
+            _ => batch.push((pane, input)),
+        }
+    }
+    batch
+}
+
+/// A new herdr workspace in `cwd` labelled `name`, with `agent` started in its first pane; herdr
+/// answers once the agent is ready for input.
+fn spawn_agent(agent: &str, cwd: &str, name: &str) -> anyhow::Result<()> {
+    let sock = herdr::socket_path();
+    let params = serde_json::json!({"cwd": cwd, "label": name, "focus": false});
+    let created = herdr::client::request(&sock, "workspace.create", params)?;
+    let pane = created["root_pane"]["pane_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("herdr returned no pane for the new workspace"))?;
+    let params =
+        serde_json::json!({"name": name, "kind": agent, "pane_id": pane, "timeout_ms": 60000});
+    herdr::client::request(&sock, "agent.start", params)?;
+    Ok(())
+}
+
 /// The visible terminal text of the agent in `pane_id`.
-fn read_screen(pane_id: &str) -> anyhow::Result<String> {
-    let params = serde_json::json!({"target": pane_id, "source": "visible"});
+fn read_screen(pane_id: &str, format: &str) -> anyhow::Result<String> {
+    let params = serde_json::json!({"target": pane_id, "source": "visible", "format": format});
     let result = herdr::client::request(&herdr::socket_path(), "agent.read", params)?;
     Ok(result["read"]["text"]
         .as_str()
@@ -589,9 +771,13 @@ mod tests {
         .unwrap();
         let lock = tmp.path().join("collector.lock");
         let _held = collector::try_lock(&lock).unwrap();
-        let claude = ClaudeSource::new(&tmp.path().join("claude"), tmp.path().join("index.json"));
+        let claude = Source::new(
+            crate::transcripts::Kind::Claude,
+            &tmp.path().join("claude"),
+            tmp.path().join("index.json"),
+        );
         let rx = spawn_sources(
-            Some(claude),
+            vec![claude],
             events::Log::new(tmp.path().to_path_buf()),
             lock,
         );
@@ -600,5 +786,26 @@ mod tests {
         assert!(first.collector_running);
         let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(second.threads.len(), 1);
+    }
+
+    #[test]
+    fn typed_text_goes_out_in_one_piece() {
+        let t = |p: &str, s: &str| (p.to_string(), Input::Text(s.into()));
+        let k = |p: &str, s: &str| (p.to_string(), Input::Key(s.into()));
+        let got = coalesce(
+            [
+                t("a", "h"),
+                t("a", "i"),
+                k("a", "enter"),
+                t("a", "x"),
+                t("b", "y"),
+                t("b", "z"),
+            ]
+            .into_iter(),
+        );
+        assert_eq!(
+            got,
+            [t("a", "hi"), k("a", "enter"), t("a", "x"), t("b", "yz")]
+        );
     }
 }
