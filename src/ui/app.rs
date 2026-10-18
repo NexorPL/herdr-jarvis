@@ -700,6 +700,63 @@ impl App {
         }
     }
 
+    /// The selected project, agent or thread by identity: the lists re-sort when the model changes.
+    pub fn selection(&self) -> Option<String> {
+        let row = self.selected_row;
+        match (&self.screen, self.tab()) {
+            (Screen::Core, _) => match self.node_at_selection() {
+                Some(Node::Project(i)) => self.model.projects.get(i).map(|p| p.key.clone()),
+                _ => None,
+            },
+            (_, Tab::Agents | Tab::Live) => {
+                (self.visible_agents().get(row)).map(|(_, a)| a.pane.pane_id.clone())
+            }
+            (_, Tab::Threads) => {
+                (self.visible_threads().get(row)).map(|t| t.thread.session_id.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Selects what `selection` returned before the model changed, then keeps selections in range.
+    pub fn reselect(&mut self, selected: Option<String>) {
+        if let Some(id) = selected {
+            match (&self.screen, self.tab()) {
+                (Screen::Core, _) => {
+                    let i = self.model.projects.iter().position(|p| p.key == id);
+                    // A project folded into the overflow node keeps the selection where it was.
+                    if let Some(i) = i
+                        .filter(|&i| self.compact || self.nodes().get(i) == Some(&Node::Project(i)))
+                    {
+                        self.selected_node = i;
+                    }
+                }
+                (_, Tab::Agents | Tab::Live) => {
+                    let rows = self.visible_agents();
+                    if let Some(i) = rows.iter().position(|(_, a)| a.pane.pane_id == id) {
+                        self.selected_row = i;
+                    }
+                }
+                (_, Tab::Threads) => {
+                    let rows = self.visible_threads();
+                    if let Some(i) = rows.iter().position(|t| t.thread.session_id == id) {
+                        self.selected_row = i;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.clamp();
+    }
+
+    /// The selected core node; in compact mode every project is a row.
+    fn node_at_selection(&self) -> Option<Node> {
+        match self.compact {
+            true => Some(Node::Project(self.selected_node)),
+            false => self.nodes().get(self.selected_node).copied(),
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if self.fatal.is_some() {
             self.quit = true;
@@ -835,14 +892,10 @@ impl App {
     }
 
     fn open_selected(&mut self) {
-        let project = if self.compact {
-            Some(self.selected_node)
-        } else {
-            match self.nodes().get(self.selected_node) {
-                Some(Node::Project(i)) => Some(*i),
-                Some(Node::More(_)) => return self.goto(Screen::Global(Tab::Agents)),
-                None => None,
-            }
+        let project = match self.node_at_selection() {
+            Some(Node::Project(i)) => Some(i),
+            Some(Node::More(_)) => return self.goto(Screen::Global(Tab::Agents)),
+            None => None,
         };
         if let Some(p) = project.and_then(|i| self.model.projects.get(i)) {
             let key = p.key.clone();
@@ -1730,6 +1783,35 @@ mod tests {
         app.clamp();
         assert_eq!(app.selected_node, 2);
         assert_eq!(app.selected_row, 1);
+    }
+
+    #[test]
+    fn selection_follows_its_item_when_the_model_reorders() {
+        let mut app = sample_app();
+        let project = app.model.projects[0].key.clone();
+        let selected = app.selection();
+        app.model.projects.reverse();
+        app.reselect(selected);
+        assert_eq!(app.model.projects[app.selected_node].key, project);
+
+        key(&mut app, KeyCode::Char('A'));
+        let pane = app.visible_agents()[0].1.pane.pane_id.clone();
+        let selected = app.selection();
+        app.model.projects.reverse();
+        app.reselect(selected);
+        assert_ne!(app.selected_row, 0);
+        assert_eq!(app.visible_agents()[app.selected_row].1.pane.pane_id, pane);
+
+        key(&mut app, KeyCode::Char('T'));
+        let session = app.visible_threads()[0].thread.session_id.clone();
+        let selected = app.selection();
+        app.model.threads.reverse();
+        app.reselect(selected);
+        assert_ne!(app.selected_row, 0);
+        assert_eq!(
+            app.visible_threads()[app.selected_row].thread.session_id,
+            session
+        );
     }
 
     #[test]

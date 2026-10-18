@@ -319,6 +319,7 @@ fn event_loop(
         }
         if dirty || std::mem::take(&mut app.refresh) {
             let today = app.today();
+            let selected = app.selection();
             app.model = model::build(
                 &snap,
                 &update.threads,
@@ -327,7 +328,7 @@ fn event_loop(
                 &mut resolver,
                 &today,
             );
-            app.clamp();
+            app.reselect(selected);
             dirty = false;
             // Forget the screens of closed panes, and stop typing into one.
             let open: std::collections::HashSet<&str> = (app.model.projects.iter())
