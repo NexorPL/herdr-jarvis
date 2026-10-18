@@ -130,12 +130,16 @@ fn node_working(node: &Node, app: &App) -> bool {
 }
 
 /// Node box size in cells for `lines` of text: a fifth of the field's width and at most a quarter
-/// of its height, so eight nodes around the reactor do not overlap; never below 24×4.
+/// of its height, never below 24×4. Neighbours of eight nodes sit a quarter of the field's height
+/// apart, and the top node and its neighbours a quarter of its width; below 96 columns 24-wide
+/// boxes would touch there, so they keep 4 rows like before.
 fn box_size(field: Rect, lines: usize) -> (u16, u16) {
     let w = (field.width / 5).clamp(24, 44);
-    let h = (lines as u16)
-        .saturating_add(2)
-        .clamp(4, (field.height / 4).max(4));
+    let max_h = match field.width >= 96 {
+        true => (field.height / 4).max(4),
+        false => 4,
+    };
+    let h = (lines as u16).saturating_add(2).clamp(4, max_h);
     (w, h)
 }
 
@@ -188,14 +192,15 @@ fn reactor(f: &mut Frame, area: Rect, app: &App) {
     let positions: Vec<(f64, f64)> = (0..nodes.len())
         .map(|i| node_pos(i, nodes.len(), w, h))
         .collect();
+    let show_nodes = progress >= 0.6;
     let inner = box_size(area, 0).0 as usize - 2;
     let contents: Vec<NodeContent> = (nodes.iter().enumerate())
+        .filter(|_| show_nodes)
         .map(|(i, node)| node_content(app, i, node, inner))
         .collect();
     let sizes: Vec<(u16, u16)> = (contents.iter())
         .map(|c| box_size(area, c.lines.len()))
         .collect();
-    let show_nodes = progress >= 0.6;
     let canvas = Canvas::default()
         .marker(Marker::Braille)
         .x_bounds([-w / 2.0, w / 2.0])
@@ -345,10 +350,8 @@ fn node_content(app: &App, i: usize, node: &Node, width: usize) -> NodeContent {
                     Span::raw(" ".repeat(pad)),
                     Span::styled(ago, dim),
                 ]));
-                let running: Vec<_> = (app.subagents(a).into_iter())
-                    .filter(|(_, running)| *running)
-                    .collect();
-                for (n, (sub, _)) in running.iter().enumerate() {
+                let running = app.running_subagents_of(a);
+                for (n, sub) in running.iter().enumerate() {
                     let branch = if n + 1 == running.len() { "└" } else { "├" };
                     let text = format!("{} {}", sub.agent_type, sub.description);
                     lines.push(Line::from(vec![
@@ -357,6 +360,13 @@ fn node_content(app: &App, i: usize, node: &Node, width: usize) -> NodeContent {
                         Span::styled(theme::truncate(&text, width.saturating_sub(6)), dim),
                     ]));
                 }
+            }
+            // Without agent rows, the project's last activity says when it was busy.
+            if let Some(ts) = p.last_activity.filter(|_| p.agents.is_empty()) {
+                lines.push(Line::styled(
+                    format!("last active {}", theme::ago(Some(ts), app.now)),
+                    dim,
+                ));
             }
             NodeContent {
                 title: format!("{} {}", i + 1, p.name),
@@ -604,6 +614,11 @@ mod tests {
         assert!(out.contains("… +6"));
         assert_eq!(box_size(Rect::new(0, 0, 200, 46), 20), (40, 11));
         assert_eq!(box_size(Rect::new(0, 0, 100, 28), 2), (24, 4));
+        assert_eq!(box_size(Rect::new(0, 0, 90, 28), 10), (24, 4));
+        // A project without agents says when it was last active.
+        app.model.projects[1].agents.clear();
+        app.model.projects[1].last_activity = Some(app.now - chrono::Duration::minutes(5));
+        assert!(core(&app, 200, 30).contains("last active 5m"));
     }
 
     #[test]

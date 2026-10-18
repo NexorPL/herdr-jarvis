@@ -144,7 +144,14 @@ const ACTIVITY_LEN: usize = 30;
 
 /// A log entry for a content block: `Tool  what it works on`, or `› ` and a reply's first line.
 fn activity_of(block: &Value) -> Option<String> {
-    let first_line = |s: &str| super::snippet(s.lines().next().unwrap_or("").trim());
+    let first_line = |s: &str| {
+        super::snippet(
+            s.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or(""),
+        )
+    };
     match block["type"].as_str()? {
         "tool_use" => {
             let name = block["name"].as_str()?;
@@ -382,8 +389,8 @@ mod tests {
         assert_eq!(s.last_ts, Some(ts("2026-10-08T10:04:00Z")));
     }
 
-    #[test]
-    fn subagent_ends_with_a_handback_tool() {
+    /// A subagent of `sess-a` that hands its result back with `SubagentHandback`.
+    fn with_handback() -> (tempfile::TempDir, PathBuf) {
         let (tmp, claude, _) = setup(FIXTURE);
         let sub = claude.join("projects/-home-u-alpha/sess-a/subagents");
         std::fs::create_dir_all(&sub).unwrap();
@@ -399,8 +406,39 @@ mod tests {
             ),
         )
         .unwrap();
+        (tmp, claude)
+    }
+
+    #[test]
+    fn subagent_ends_with_a_handback_tool() {
+        let (tmp, claude) = with_handback();
         let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         assert!(src.refresh()[0].subagents[0].ended);
+    }
+
+    #[test]
+    fn unfinished_subagents_are_read_again_on_start() {
+        let (tmp, claude) = with_handback();
+        let index = tmp.path().join("index.json");
+        let mut src = Source::new(Kind::Claude, &claude, index.clone());
+        src.refresh();
+        // As an older Jarvis left it: read to the end without seeing the end.
+        for f in src.files.values_mut() {
+            f.ended = false;
+        }
+        src.save();
+        let mut again = Source::new(Kind::Claude, &claude, index);
+        assert!(again.refresh()[0].subagents[0].ended);
+    }
+
+    #[test]
+    fn log_entries_skip_leading_blank_lines() {
+        let text = serde_json::json!({"type": "text", "text": "\n\n  Found it\nmore"});
+        assert_eq!(activity_of(&text).as_deref(), Some("› Found it"));
+        let bash = serde_json::json!({"type": "tool_use", "name": "Bash", "input": {"command": "\ncargo test"}});
+        assert_eq!(activity_of(&bash).as_deref(), Some("Bash  cargo test"));
+        let blank = serde_json::json!({"type": "text", "text": " \n "});
+        assert_eq!(activity_of(&blank), None);
     }
 
     #[test]

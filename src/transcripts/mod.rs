@@ -144,8 +144,9 @@ pub(crate) struct FileState {
     /// Subagent description and type.
     #[serde(default)]
     meta: Option<(String, String)>,
-    /// A running subagent's latest tool calls and replies.
-    #[serde(default)]
+    /// A running subagent's latest tool calls and replies; not saved, unfinished subagents are
+    /// read again on start.
+    #[serde(skip)]
     activity: Vec<String>,
     /// Session id of the session that spawned this one as a subagent.
     #[serde(default)]
@@ -170,10 +171,15 @@ pub struct Source {
 
 impl Source {
     pub fn new(kind: Kind, root: &Path, index_path: PathBuf) -> Source {
-        let files = std::fs::read_to_string(&index_path)
+        let mut files: HashMap<String, FileState> = std::fs::read_to_string(&index_path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
+        // Unfinished Claude Code subagents are read again: that restores their logs, and catches
+        // ends an older Jarvis did not recognise. A deleted file keeps its entry and its usage.
+        if kind == Kind::Claude {
+            files.retain(|path, f| f.parent.is_none() || f.ended || !Path::new(path).is_file());
+        }
         Source {
             kind,
             root: root.to_path_buf(),
@@ -322,9 +328,7 @@ pub fn sources(claude_dir: Option<PathBuf>, state: &Path) -> Vec<Source> {
     ]
     .into_iter()
     .filter_map(|(kind, root)| {
-        // v3 missed subagents that end with a handback tool; v4 rebuilds it once.
-        let _ = std::fs::remove_file(state.join(format!("{}-index-v3.json", kind.name())));
-        let index = state.join(format!("{}-index-v4.json", kind.name()));
+        let index = state.join(format!("{}-index-v3.json", kind.name()));
         Some(Source::new(kind, &root?, index))
     })
     .collect()

@@ -490,12 +490,19 @@ impl App {
         subs
     }
 
+    /// This agent's running subagents, most recently active first.
+    pub fn running_subagents_of(&self, a: &AgentRow) -> Vec<&SubAgent> {
+        (self.subagents(a).into_iter())
+            .filter(|(_, running)| *running)
+            .map(|(s, _)| s)
+            .collect()
+    }
+
     /// Running subagents of the project's live agents: the twigs on its core node.
     pub fn running_subagents(&self, p: &Project) -> usize {
         (p.agents.iter())
-            .flat_map(|a| self.subagents(a))
-            .filter(|(_, running)| *running)
-            .count()
+            .map(|a| self.running_subagents_of(a).len())
+            .sum()
     }
 
     pub fn new_in(&self, p: &Project) -> usize {
@@ -723,12 +730,12 @@ impl App {
         if let Some(id) = selected {
             match (&self.screen, self.tab()) {
                 (Screen::Core, _) => {
-                    let i = self.model.projects.iter().position(|p| p.key == id);
-                    // A project folded into the overflow node keeps the selection where it was.
-                    if let Some(i) = i
-                        .filter(|&i| self.compact || self.nodes().get(i) == Some(&Node::Project(i)))
-                    {
-                        self.selected_node = i;
+                    // A project folded into the overflow node selects that node, the last one.
+                    if let Some(i) = self.model.projects.iter().position(|p| p.key == id) {
+                        self.selected_node = match self.compact {
+                            true => i,
+                            false => i.min(self.nodes().len().saturating_sub(1)),
+                        };
                     }
                 }
                 (_, Tab::Agents | Tab::Live) => {
@@ -1794,6 +1801,14 @@ mod tests {
         app.model.projects.reverse();
         app.reselect(selected);
         assert_eq!(app.model.projects[app.selected_node].key, project);
+        // Re-sorted into the overflow node: that node is selected, not whatever took its place.
+        app.max_branches = 2;
+        app.selected_node = 0;
+        let selected = app.selection();
+        app.model.projects.reverse();
+        app.reselect(selected);
+        assert_eq!(app.nodes()[app.selected_node], Node::More(2));
+        app.max_branches = 8;
 
         key(&mut app, KeyCode::Char('A'));
         let pane = app.visible_agents()[0].1.pane.pane_id.clone();

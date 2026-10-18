@@ -210,22 +210,23 @@ fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
         for (c, ((p, a), rect)) in cards.iter().zip(cells.iter()).enumerate() {
             let selected = first + r * cols + c == app.selected_row;
             // Running subagents get cards of their own beside the agent's screen, or below it when
-            // the card is narrow.
-            let subs: Vec<&SubAgent> = (app.subagents(a).into_iter())
-                .filter(|(_, running)| *running)
-                .map(|(s, _)| s)
-                .collect();
-            let main = match subs.is_empty() {
-                true => *rect,
-                false => {
-                    let split = [Constraint::Percentage(60), Constraint::Percentage(40)];
-                    let [main, side] = match rect.width >= 2 * MIN_W {
-                        true => Layout::horizontal(split).areas(*rect),
-                        false => Layout::vertical(split).areas(*rect),
-                    };
+            // the card is narrow; not while you type into it, and not when either part would
+            // drop below the minimum card size.
+            let typing = app.typing.as_deref() == Some(a.pane.pane_id.as_str());
+            let subs = app.running_subagents_of(a);
+            let split = [Constraint::Percentage(60), Constraint::Percentage(40)];
+            let parts = match (typing || subs.is_empty(), rect.width, rect.height) {
+                (true, ..) => None,
+                (false, w, _) if w >= 2 * MIN_W => Some(Layout::horizontal(split).areas(*rect)),
+                (false, _, h) if h >= 2 * MIN_H => Some(Layout::vertical(split).areas(*rect)),
+                _ => None,
+            };
+            let main = match parts {
+                Some([main, side]) => {
                     subagent_cards(f, side, app, pal, &subs);
                     main
                 }
+                None => *rect,
             };
             card(f, main, app, pal, p, a, selected);
         }
@@ -1073,6 +1074,12 @@ mod tests {
         let out = screen(&app, 70, 40);
         assert!(out.contains("Read  src/lexer.rs"));
         assert!(title(&out).starts_with('╭'));
+        // Too small to split, or typed into: the agent keeps its whole card.
+        app.selected_row = 1;
+        let out = screen(&app, 70, 14);
+        assert!(out.contains("alpha · claude") && !out.contains("Find the lexer"));
+        app.typing = Some(app.visible_agents()[1].1.pane.pane_id.clone());
+        assert!(!screen(&app, 200, 40).contains("Find the lexer"));
     }
 
     #[test]
