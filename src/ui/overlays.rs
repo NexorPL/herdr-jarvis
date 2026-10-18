@@ -19,16 +19,21 @@ fn popup_wide(
     pal: &Palette,
 ) {
     let w = width.min(area.width);
-    let h = (lines.len() as u16 + 2).min(area.height);
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Sized to the wrapped rows, not the lines: a long value wraps onto several.
+    let rows = text.line_count(w.saturating_sub(2)) as u16;
+    let h = rows.saturating_add(2).min(area.height);
     let rect = Rect::new(
         area.x + (area.width - w) / 2,
         area.y + (area.height - h) / 2,
         w,
         h,
     );
+    // Taller than the screen: the end shows, where the cursor and the hints are.
+    let scroll = rows.saturating_sub(h.saturating_sub(2));
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        text.scroll((scroll, 0)).block(
             Block::bordered()
                 .title(title.to_string())
                 .border_style(Style::new().fg(pal.accent)),
@@ -66,6 +71,18 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
             Line::from(spans)
         })
         .collect();
+    // A prompt can be long: nearly the screen's width and at least 8 rows to write in.
+    let prompt = matches!(form.kind, FormKind::Prompt { .. });
+    let width = if prompt {
+        area.width.saturating_sub(4)
+    } else {
+        84
+    };
+    if prompt {
+        let rows = (Paragraph::new(lines.clone()).wrap(Wrap { trim: false }))
+            .line_count(width.saturating_sub(2));
+        lines.extend(vec![Line::raw(""); 8usize.saturating_sub(rows)]);
+    }
     lines.push(Line::raw(""));
     if let Some(e) = &form.error {
         lines.push(Line::from(Span::styled(
@@ -78,7 +95,7 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
         _ => "Tab next field · Enter save · Esc cancel",
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
-    popup(f, area, &form.title, lines, pal);
+    popup_wide(f, area, width, &form.title, lines, pal);
 }
 
 pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
@@ -172,4 +189,51 @@ pub fn answer(f: &mut Frame, area: Rect, app: &App, a: &Answer) {
         lines,
         pal,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::app::{sample_app, FormKind};
+    use crate::ui::render;
+
+    fn with_prompt(text: String) -> App {
+        let mut app = sample_app();
+        app.form = Some(Form {
+            title: " prompt · alpha ".into(),
+            kind: FormKind::Prompt {
+                pane_id: "w1:p1".into(),
+                agent: "alpha".into(),
+            },
+            fields: vec![("prompt", text)],
+            focus: 0,
+            cursor: usize::MAX,
+            error: None,
+        });
+        app
+    }
+
+    #[test]
+    fn long_prompt_keeps_its_end_and_hint_in_view() {
+        let words: String = (0..60).map(|i| format!("word{i:02} ")).collect();
+        let app = with_prompt(words + "END");
+        let out = render(120, 30, |f| crate::ui::draw(f, &app));
+        assert!(out.contains("END"));
+        assert!(out.contains("Enter send · Esc cancel"));
+        // Nearly the whole width, not the 84 columns of other popups.
+        let top = out.lines().find(|l| l.contains("prompt · alpha")).unwrap();
+        assert_eq!(top.find('┌'), Some(2));
+        // Longer than the screen: the end, where the cursor is, stays in view.
+        let app = with_prompt("x".repeat(3000) + "END");
+        let out = render(120, 20, |f| crate::ui::draw(f, &app));
+        assert!(out.contains("END") && out.contains("Enter send · Esc cancel"));
+    }
+
+    #[test]
+    fn short_prompt_gets_a_roomy_box() {
+        let app = with_prompt("hi".into());
+        let out = render(120, 30, |f| crate::ui::draw(f, &app));
+        let rows = out.lines().filter(|l| l.find('│') == Some(2)).count();
+        assert!(rows >= 10, "{out}");
+    }
 }
