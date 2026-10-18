@@ -328,9 +328,9 @@ pub fn sources(claude_dir: Option<PathBuf>, state: &Path) -> Vec<Source> {
     ]
     .into_iter()
     .filter_map(|(kind, root)| {
-        // Never rename or rebuild these files: the index is the only record of sessions whose
-        // transcripts the agent has since deleted. When parsing changes, re-read the affected
-        // entries in place (see `Source::new`).
+        // The index is the only record of sessions whose transcripts the agent has since deleted:
+        // a rebuild or a new file name must carry those entries over. When parsing changes,
+        // re-reading the affected entries in place is simplest (see `Source::new`).
         let index = state.join(format!("{}-index-v3.json", kind.name()));
         Some(Source::new(kind, &root?, index))
     })
