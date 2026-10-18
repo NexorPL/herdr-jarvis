@@ -172,6 +172,7 @@ pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
                     agent_type: agent_type.into(),
                     last_ts: Some(now - Duration::minutes(ago)),
                     ended,
+                    activity: Vec::new(),
                 })
                 .collect();
             t

@@ -49,6 +49,7 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
                 agent_type: s("agentName"),
                 last_ts: ts,
                 ended: false,
+                activity: Vec::new(),
             });
         }
         Some("subagent.completed" | "subagent.failed") => {

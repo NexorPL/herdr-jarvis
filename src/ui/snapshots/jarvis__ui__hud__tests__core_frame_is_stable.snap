@@ -1,13 +1,12 @@
 ---
 source: src/ui/hud.rs
-assertion_line: 531
 expression: "core(&app, 100, 30)"
 ---
                                                                                                     
                                                                                                     
                                       ┏1 beta━━━━━━━━━━━━━━━━┓                                      
                                       ┃▲1                    ┃                                      
-                                      ┃30m · title w2:p1     ┃                                      
+                                      ┃▲ claude title w2… 30m┃                                      
                                       ┗━━━━━━━━━━━━━━━━━━━━━━┛                                      
                                                   ⡇                                                 
                                                   ⡇                                                 
@@ -22,7 +21,7 @@ expression: "core(&app, 100, 30)"
                                ⣀⡠⠤⠔⠒⠉⠁       ⠉⠠⣄⡁ ⠉⡉ ⠔⠃       ⠈⠉⠒⠢⠤⢄⣀                               
        ╭3 gamma───────────────╮                   ⠉⠁                 ╭2 alpha───────────────╮       
        │no agents             │                                      │●1                    │       
-       │— ·                   │               2 active               │10m · title w1:p1     │       
+       │                      │               2 active               │● claude title w1:… 1h│       
        ╰──────────────────────╯                                      ╰──────────────────────╯       
                                                                                                     
                                                                                                     

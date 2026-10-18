@@ -1,6 +1,6 @@
 [package]
 name = "jarvis"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
@@ -10,7 +10,8 @@ repository = "https://github.com/NexorPL/herdr-jarvis"
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-ratatui = "0.30"
+# `unstable-rendered-line-info`: `Paragraph::line_count`, so popups fit their wrapped text.
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

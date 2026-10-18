@@ -74,14 +74,17 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
 
 - **Core**: the status bar with global counts and today's estimated cost; the reactor in the middle
   (spins faster with more working agents, turns amber for unseen results and pulses red when an agent
-  is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; a twig
+  is blocked); one branch per project, the most urgent first, overflow folded into `+N more`; each
+  project's node lists its agents with their running subagents and grows with the window; a twig
   out of a project's node for each running subagent of its agents (`· N sub` in the node); a
   feed of the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
   Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
   subagent its session spawned, running first.
 - **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
-  share the whole screen, in the agent's own colors. `G` shows every project's agents. `Enter` on a
+  share the whole screen, in the agent's own colors. Each running subagent gets a smaller card beside
+  its agent's screen (below it on a narrow card) with its latest tool calls and replies; Claude Code
+  subagents only, others show their description. `G` shows every project's agents. `Enter` on a
   card types into that agent right there: every key goes to it (`Ctrl+C` interrupts it) and the
   card shows its whole screen until `Esc`. `g` jumps to the agent's pane; `p`, `R` and `x` work as in
   the Agents list.

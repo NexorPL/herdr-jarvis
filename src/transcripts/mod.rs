@@ -60,6 +60,9 @@ pub struct SubAgent {
     pub last_ts: Option<DateTime<Utc>>,
     /// It finished its task.
     pub ended: bool,
+    /// Its latest tool calls and replies, oldest first; kept only while it runs (Claude Code).
+    #[serde(default)]
+    pub activity: Vec<String>,
 }
 
 impl SubAgent {
@@ -141,6 +144,10 @@ pub(crate) struct FileState {
     /// Subagent description and type.
     #[serde(default)]
     meta: Option<(String, String)>,
+    /// A running subagent's latest tool calls and replies; not saved, unfinished subagents are
+    /// read again on start.
+    #[serde(skip)]
+    activity: Vec<String>,
     /// Session id of the session that spawned this one as a subagent.
     #[serde(default)]
     parent: Option<String>,
@@ -164,10 +171,15 @@ pub struct Source {
 
 impl Source {
     pub fn new(kind: Kind, root: &Path, index_path: PathBuf) -> Source {
-        let files = std::fs::read_to_string(&index_path)
+        let mut files: HashMap<String, FileState> = std::fs::read_to_string(&index_path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
+        // Unfinished Claude Code subagents are read again: that restores their logs, and catches
+        // ends an older Jarvis did not recognise. A deleted file keeps its entry and its usage.
+        if kind == Kind::Claude {
+            files.retain(|path, f| f.parent.is_none() || f.ended || !Path::new(path).is_file());
+        }
         Source {
             kind,
             root: root.to_path_buf(),
@@ -211,6 +223,7 @@ impl Source {
                 agent_type,
                 last_ts: sub.last_ts,
                 ended: f.ended,
+                activity: f.activity.clone(),
             });
             t.last_ts = t.last_ts.max(sub.last_ts);
             for (day, models) in &sub.usage {
@@ -315,6 +328,9 @@ pub fn sources(claude_dir: Option<PathBuf>, state: &Path) -> Vec<Source> {
     ]
     .into_iter()
     .filter_map(|(kind, root)| {
+        // The index is the only record of sessions whose transcripts the agent has since deleted:
+        // a rebuild or a new file name must carry those entries over. When parsing changes,
+        // re-reading the affected entries in place is simplest (see `Source::new`).
         let index = state.join(format!("{}-index-v3.json", kind.name()));
         Some(Source::new(kind, &root?, index))
     })
