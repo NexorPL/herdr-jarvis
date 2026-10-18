@@ -129,11 +129,19 @@ fn node_working(node: &Node, app: &App) -> bool {
     matches!(node, Node::Project(i) if app.model.projects[*i].counts.working > 0)
 }
 
-/// Half the node box (24×4 cells) in canvas units.
-const BOX_HALF: (f64, f64) = (12.0, 4.0);
+/// Node box size in cells for `lines` of text: a fifth of the field's width and at most a quarter
+/// of its height, so eight nodes around the reactor do not overlap; never below 24×4.
+fn box_size(field: Rect, lines: usize) -> (u16, u16) {
+    let w = (field.width / 5).clamp(24, 44);
+    let h = (lines as u16)
+        .saturating_add(2)
+        .clamp(4, (field.height / 4).max(4));
+    (w, h)
+}
 
-/// Twigs for `n` running subagents: short lines fanned outward from the node box at (`x`, `y`).
-fn twigs(x: f64, y: f64, n: usize) -> Vec<((f64, f64), (f64, f64))> {
+/// Twigs for `n` running subagents: short lines fanned outward from the node box at (`x`, `y`),
+/// whose half size in canvas units is `half`.
+fn twigs(x: f64, y: f64, n: usize, half: (f64, f64)) -> Vec<((f64, f64), (f64, f64))> {
     let base = y.atan2(x);
     let spread = 0.35;
     (0..n)
@@ -141,7 +149,7 @@ fn twigs(x: f64, y: f64, n: usize) -> Vec<((f64, f64), (f64, f64))> {
             let a = base + spread * (k as f64 - (n - 1) as f64 / 2.0);
             let (dx, dy) = (a.cos(), a.sin());
             // Leave the box where the ray from its center crosses its edge.
-            let edge = (BOX_HALF.0 / dx.abs().max(1e-6)).min(BOX_HALF.1 / dy.abs().max(1e-6));
+            let edge = (half.0 / dx.abs().max(1e-6)).min(half.1 / dy.abs().max(1e-6));
             let start = (x + dx * (edge + 1.0), y + dy * (edge + 1.0));
             (start, (start.0 + dx * 6.0, start.1 + dy * 6.0))
         })
@@ -180,6 +188,13 @@ fn reactor(f: &mut Frame, area: Rect, app: &App) {
     let positions: Vec<(f64, f64)> = (0..nodes.len())
         .map(|i| node_pos(i, nodes.len(), w, h))
         .collect();
+    let inner = box_size(area, 0).0 as usize - 2;
+    let contents: Vec<NodeContent> = (nodes.iter().enumerate())
+        .map(|(i, node)| node_content(app, i, node, inner))
+        .collect();
+    let sizes: Vec<(u16, u16)> = (contents.iter())
+        .map(|c| box_size(area, c.lines.len()))
+        .collect();
     let show_nodes = progress >= 0.6;
     let canvas = Canvas::default()
         .marker(Marker::Braille)
@@ -208,7 +223,10 @@ fn reactor(f: &mut Frame, area: Rect, app: &App) {
                         Node::Project(p) => app.running_subagents(&app.model.projects[p]),
                         Node::More(_) => 0,
                     };
-                    for (k, ((x1, y1), (x2, y2))) in twigs(x, y, subs).into_iter().enumerate() {
+                    // Box rows are two canvas units high.
+                    let half = (sizes[i].0 as f64 / 2.0, sizes[i].1 as f64);
+                    for (k, ((x1, y1), (x2, y2))) in twigs(x, y, subs, half).into_iter().enumerate()
+                    {
                         ctx.draw(&CanvasLine {
                             x1,
                             y1,
@@ -287,8 +305,74 @@ fn reactor(f: &mut Frame, area: Rect, app: &App) {
     );
 
     if show_nodes {
-        for (i, node) in nodes.iter().enumerate() {
-            node_box(f, area, to_cell(area, positions[i]), i, node, app, tick);
+        for (i, content) in contents.into_iter().enumerate() {
+            let center = to_cell(area, positions[i]);
+            node_box(f, area, center, sizes[i], i, content, app);
+        }
+    }
+}
+
+struct NodeContent {
+    title: String,
+    lines: Vec<Line<'static>>,
+    color: Color,
+}
+
+/// A project node: its counts, then a row per agent followed by its running subagents, each fitted
+/// to `width` cells. The overflow node lists the projects it stands for.
+fn node_content(app: &App, i: usize, node: &Node, width: usize) -> NodeContent {
+    let pal = &app.palette;
+    let dim = Style::new().fg(pal.dim);
+    match node {
+        Node::Project(p) => {
+            let p = &app.model.projects[*p];
+            let mut lines = vec![Line::from(theme::truncate(&project_counts(app, p), width))];
+            for a in &p.agents {
+                let s = a.pane.agent_status;
+                let ago = theme::ago(a.since, app.now);
+                let agent = a.pane.agent.as_deref().unwrap_or_default();
+                let left = theme::truncate(
+                    format!("{agent} {}", a.pane.title()).trim(),
+                    width.saturating_sub(ago.chars().count() + 3),
+                );
+                let pad = width.saturating_sub(left.chars().count() + ago.chars().count() + 2);
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{} ", theme::glyph(s)),
+                        Style::new().fg(theme::status_color(s, pal)),
+                    ),
+                    Span::raw(left),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(ago, dim),
+                ]));
+                let running: Vec<_> = (app.subagents(a).into_iter())
+                    .filter(|(_, running)| *running)
+                    .collect();
+                for (n, (sub, _)) in running.iter().enumerate() {
+                    let branch = if n + 1 == running.len() { "└" } else { "├" };
+                    let text = format!("{} {}", sub.agent_type, sub.description);
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {branch} "), dim),
+                        Span::styled("● ", Style::new().fg(pal.accent)),
+                        Span::styled(theme::truncate(&text, width.saturating_sub(6)), dim),
+                    ]));
+                }
+            }
+            NodeContent {
+                title: format!("{} {}", i + 1, p.name),
+                lines,
+                color: theme::status_color(p.urgency(), pal),
+            }
+        }
+        Node::More(n) => {
+            let rest: Vec<&str> = (app.model.projects.iter().skip(i))
+                .map(|p| p.name.as_str())
+                .collect();
+            NodeContent {
+                title: format!("{} +{n} more", i + 1),
+                lines: vec![Line::from(theme::truncate(&rest.join(", "), width))],
+                color: pal.dim,
+            }
         }
     }
 }
@@ -297,13 +381,12 @@ fn node_box(
     f: &mut Frame,
     area: Rect,
     (cx, cy): (u16, u16),
+    (w, h): (u16, u16),
     i: usize,
-    node: &Node,
+    content: NodeContent,
     app: &App,
-    tick: u64,
 ) {
     let pal = &app.palette;
-    let (w, h) = (24u16, 4u16);
     let x = cx
         .saturating_sub(w / 2)
         .max(area.x)
@@ -317,39 +400,13 @@ fn node_box(
         return;
     }
     let selected = i == app.selected_node;
-    let (title, lines, color) = match node {
-        Node::Project(p) => {
-            let p = &app.model.projects[*p];
-            let first = p
-                .agents
-                .first()
-                .map(|a| a.pane.title().to_string())
-                .unwrap_or_default();
-            (
-                format!("{} {}", i + 1, p.name),
-                vec![
-                    project_counts(app, p),
-                    format!("{} · {first}", theme::ago(p.last_activity, app.now)),
-                ],
-                theme::status_color(p.urgency(), pal),
-            )
-        }
-        Node::More(n) => {
-            let rest: Vec<&str> = app
-                .model
-                .projects
-                .iter()
-                .skip(i)
-                .map(|p| p.name.as_str())
-                .collect();
-            (
-                format!("{} +{n} more", i + 1),
-                vec![rest.join(", ")],
-                pal.dim,
-            )
-        }
-    };
-    let pulse_off = app.animation == Animation::Full && color == pal.alert && (tick / 8) % 2 == 1;
+    let NodeContent {
+        title,
+        mut lines,
+        color,
+    } = content;
+    let pulse_off =
+        app.animation == Animation::Full && color == pal.alert && (app.anim_tick() / 8) % 2 == 1;
     let border = if selected {
         pal.accent
     } else if pulse_off {
@@ -369,12 +426,18 @@ fn node_box(
             theme::truncate(&title, w as usize - 4),
             Style::new().fg(pal.text).bold(),
         ));
-    let body: Vec<Line> = lines
-        .into_iter()
-        .map(|l| Line::from(theme::truncate(&l, w as usize - 2)))
-        .collect();
+    // What does not fit folds into a last row.
+    let rows = h as usize - 2;
+    if lines.len() > rows {
+        let hidden = lines.len() - (rows - 1);
+        lines.truncate(rows - 1);
+        lines.push(Line::styled(
+            format!("… +{hidden}"),
+            Style::new().fg(pal.dim),
+        ));
+    }
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(body).block(block), rect);
+    f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 /// Agent counts, how many changed to blocked/done since you last left Jarvis, and running subagents.
@@ -515,10 +578,40 @@ mod tests {
     }
 
     #[test]
+    fn node_box_lists_agents_and_running_subagents() {
+        let app = crate::ui::app::with_subagents(sample_app());
+        let out = core(&app, 200, 50);
+        assert!(out.contains("● claude title w1:p1"));
+        assert!(out.contains("● Explore Find the lexer"));
+        assert!(!out.contains("Old survey"));
+    }
+
+    #[test]
+    fn node_box_grows_with_the_field_and_folds_what_does_not_fit() {
+        let mut app = sample_app();
+        let alpha = &mut app.model.projects[1];
+        let agent = alpha.agents[0].clone();
+        for n in 2..10 {
+            let mut a = agent.clone();
+            a.pane.pane_id = format!("w1:p{n}");
+            a.pane.terminal_title_stripped = Some(format!("title w1:p{n}"));
+            alpha.agents.push(a);
+        }
+        // A 200×28 field: boxes 40 wide and up to 7 rows, so the counts, 3 agents and the fold.
+        let out = core(&app, 200, 30);
+        assert!(out.contains("title w1:p3"));
+        assert!(!out.contains("title w1:p4"));
+        assert!(out.contains("… +6"));
+        assert_eq!(box_size(Rect::new(0, 0, 200, 46), 20), (40, 11));
+        assert_eq!(box_size(Rect::new(0, 0, 100, 28), 2), (24, 4));
+    }
+
+    #[test]
     fn twigs_leave_the_node_box_outward() {
+        let half = (20.0, 6.0);
         for (x, y) in [(40.0, 0.0), (0.0, 20.0), (-30.0, -15.0)] {
-            for ((x1, y1), (x2, y2)) in twigs(x, y, 3) {
-                assert!((x1 - x).abs() > BOX_HALF.0 || (y1 - y).abs() > BOX_HALF.1);
+            for ((x1, y1), (x2, y2)) in twigs(x, y, 3, half) {
+                assert!((x1 - x).abs() > half.0 || (y1 - y).abs() > half.1);
                 assert!(x2.hypot(y2) > x1.hypot(y1));
             }
         }
