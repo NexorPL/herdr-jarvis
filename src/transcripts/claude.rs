@@ -82,6 +82,9 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
             note_common(t, v);
             // A subagent's handback tool (`SubagentHandback`) ends its turn; any other user line continues it.
             state.ended = v["toolEndsTurn"].as_bool() == Some(true);
+            if state.ended {
+                state.activity.clear();
+            }
             if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
                 return;
             }
@@ -95,6 +98,17 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
             // `tool_use` and `pause_turn` continue the turn; any other stop reason ends it.
             state.ended = (msg["stop_reason"].as_str())
                 .is_some_and(|r| !matches!(r, "tool_use" | "pause_turn"));
+            if state.ended {
+                state.activity.clear();
+            } else if state.parent.is_some() {
+                let blocks = msg["content"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                state.activity.extend(blocks.iter().filter_map(activity_of));
+                let over = state.activity.len().saturating_sub(ACTIVITY_LEN);
+                state.activity.drain(..over);
+            }
             if let Some(text) = msg["content"].as_array().map(|b| super::join_text(b)) {
                 if !text.is_empty() {
                     t.last_reply = Some(super::snippet(&text));
@@ -122,6 +136,39 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
             state.last_usage = Some((super::local_day(ts), model.to_string(), usage));
         }
         _ => {}
+    }
+}
+
+/// Entries a running subagent keeps in its log.
+const ACTIVITY_LEN: usize = 30;
+
+/// A log entry for a content block: `Tool  what it works on`, or `› ` and a reply's first line.
+fn activity_of(block: &Value) -> Option<String> {
+    let first_line = |s: &str| super::snippet(s.lines().next().unwrap_or("").trim());
+    match block["type"].as_str()? {
+        "tool_use" => {
+            let name = block["name"].as_str()?;
+            let input = &block["input"];
+            let keys = [
+                "description",
+                "file_path",
+                "pattern",
+                "command",
+                "path",
+                "query",
+                "url",
+                "skill",
+            ];
+            Some(match keys.iter().find_map(|k| input[*k].as_str()) {
+                Some(what) => format!("{name}  {}", first_line(what)),
+                None => name.to_string(),
+            })
+        }
+        "text" => {
+            let text = first_line(block["text"].as_str()?);
+            (!text.is_empty()).then(|| format!("› {text}"))
+        }
+        _ => None,
     }
 }
 
@@ -354,6 +401,52 @@ mod tests {
         .unwrap();
         let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
         assert!(src.refresh()[0].subagents[0].ended);
+    }
+
+    #[test]
+    fn subagent_logs_its_tool_calls_and_replies_until_it_ends() {
+        let (tmp, claude, _) = setup(FIXTURE);
+        let sub = claude.join("projects/-home-u-alpha/sess-a/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        let tool = |name: &str, input: &str| {
+            format!(
+                r#"{{"type":"assistant","isSidechain":true,"message":{{"id":"m-{name}","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"t","name":"{name}","input":{input}}}]}},"timestamp":"2026-10-08T10:03:30.000Z"}}"#
+            )
+        };
+        let mut lines = vec![
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"Explore"},"timestamp":"2026-10-08T10:03:00.000Z"}"#.to_string(),
+            tool("Bash", r#"{"command":"cargo test","description":"Run the tests"}"#),
+            tool("Grep", r#"{"pattern":"ChangeScene","path":"src"}"#),
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m-x","content":[{"type":"thinking","thinking":"hmm"}]},"timestamp":"2026-10-08T10:03:31.000Z"}"#.to_string(),
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m-y","content":[{"type":"text","text":"Found it\nin scene.rs"}]},"timestamp":"2026-10-08T10:03:32.000Z"}"#.to_string(),
+        ];
+        for n in 0..40 {
+            lines.push(tool("Read", &format!(r#"{{"file_path":"src/f{n}.rs"}}"#)));
+        }
+        std::fs::write(sub.join("agent-1.jsonl"), lines.join("\n") + "\n").unwrap();
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
+        let activity = src.refresh()[0].subagents[0].activity.clone();
+        assert_eq!(activity.len(), 30);
+        assert_eq!(activity.last().unwrap(), "Read  src/f39.rs");
+
+        let (tmp, claude, _) = setup(FIXTURE);
+        let sub = claude.join("projects/-home-u-alpha/sess-a/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("agent-1.jsonl"), lines[..5].join("\n") + "\n").unwrap();
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
+        assert_eq!(
+            src.refresh()[0].subagents[0].activity,
+            ["Bash  Run the tests", "Grep  ChangeScene", "› Found it"]
+        );
+        // The parent session keeps no log, and an ended subagent drops its own.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(sub.join("agent-1.jsonl"))
+            .unwrap();
+        writeln!(f, r#"{{"type":"assistant","isSidechain":true,"message":{{"id":"m-z","stop_reason":"end_turn","content":[{{"type":"text","text":"done"}}]}},"timestamp":"2026-10-08T10:04:00.000Z"}}"#).unwrap();
+        let t = &src.refresh()[0];
+        assert!(t.subagents[0].activity.is_empty());
+        assert!(src.files.values().all(|f| f.activity.is_empty()));
     }
 
     #[test]

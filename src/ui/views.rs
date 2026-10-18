@@ -5,6 +5,7 @@ use super::theme::{self, Palette};
 use crate::herdr::AgentStatus;
 use crate::ideas::Status as IdeaStatus;
 use crate::model::{self, GroupBy, UsageRow};
+use crate::transcripts::SubAgent;
 use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState, Tabs, Wrap,
@@ -208,13 +209,74 @@ fn live(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
             .split(*line);
         for (c, ((p, a), rect)) in cards.iter().zip(cells.iter()).enumerate() {
             let selected = first + r * cols + c == app.selected_row;
-            card(f, *rect, app, pal, p, a, selected);
+            // Running subagents get cards of their own beside the agent's screen, or below it when
+            // the card is narrow.
+            let subs: Vec<&SubAgent> = (app.subagents(a).into_iter())
+                .filter(|(_, running)| *running)
+                .map(|(s, _)| s)
+                .collect();
+            let main = match subs.is_empty() {
+                true => *rect,
+                false => {
+                    let split = [Constraint::Percentage(60), Constraint::Percentage(40)];
+                    let [main, side] = match rect.width >= 2 * MIN_W {
+                        true => Layout::horizontal(split).areas(*rect),
+                        false => Layout::vertical(split).areas(*rect),
+                    };
+                    subagent_cards(f, side, app, pal, &subs);
+                    main
+                }
+            };
+            card(f, main, app, pal, p, a, selected);
         }
     }
 }
 
 const MIN_W: u16 = 40;
 const MIN_H: u16 = 7;
+/// Smallest subagent card: its borders and two log lines.
+const SUB_H: u16 = 4;
+
+/// Stacked cards of running subagents with the tail of their logs; those that do not fit fold into
+/// a last line.
+fn subagent_cards(f: &mut Frame, area: Rect, app: &App, pal: &Palette, subs: &[&SubAgent]) {
+    let fit = ((area.height / SUB_H) as usize).max(1);
+    let shown = match subs.len() > fit {
+        true => (fit - 1).max(1),
+        false => subs.len(),
+    };
+    let more = subs.len() - shown;
+    let mut heights = vec![Constraint::Ratio(1, shown as u32); shown];
+    if more > 0 {
+        heights.push(Constraint::Length(1));
+    }
+    let rects = Layout::vertical(heights).split(area);
+    for (s, rect) in subs.iter().zip(rects.iter()) {
+        let title = format!(
+            " ● {} · {} · {} ",
+            s.agent_type,
+            s.description,
+            theme::ago(s.last_ts, app.now)
+        );
+        let block = Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::new().fg(pal.dim))
+            .title(Span::styled(
+                theme::truncate(&title, rect.width.saturating_sub(4) as usize),
+                Style::new().fg(pal.accent),
+            ));
+        let inner = rect.height.saturating_sub(2) as usize;
+        let log = &s.activity[s.activity.len().saturating_sub(inner)..];
+        let lines: Vec<Line> = log.iter().map(|l| Line::from(l.as_str())).collect();
+        f.render_widget(Paragraph::new(lines).block(block), *rect);
+    }
+    if more > 0 {
+        f.render_widget(
+            Paragraph::new(format!(" +{more} more")).style(Style::new().fg(pal.dim)),
+            rects[shown],
+        );
+    }
+}
 
 /// Columns and rows of cards for `n` agents in `w`×`h` cells.
 fn grid(n: usize, w: u16, h: u16) -> (usize, usize) {
@@ -985,6 +1047,32 @@ mod tests {
         // A card per agent, the selected one with a thick border.
         assert!(out.contains("┏"));
         assert_eq!(out.matches("╭").count(), app.visible_agents().len() - 1);
+    }
+
+    #[test]
+    fn live_card_splits_off_its_running_subagents() {
+        let mut app = crate::ui::app::with_subagents(sample_app());
+        let t = (app.model.threads.iter_mut())
+            .find(|t| t.thread.session_id == "sess-a")
+            .unwrap();
+        t.thread.subagents[0].activity =
+            vec!["Grep  ChangeScene".into(), "Read  src/lexer.rs".into()];
+        app.screen = Screen::Global(Tab::Live);
+        let title = |out: &str| -> String {
+            (out.lines().find(|l| l.contains("Explore · Find the lexer")))
+                .unwrap_or_default()
+                .to_string()
+        };
+        // Wide: the subagent cards stand beside the agent's screen.
+        let out = screen(&app, 200, 40);
+        assert!(out.contains("Grep  ChangeScene"));
+        assert!(out.contains("Read  src/lexer.rs"));
+        assert!(!out.contains("Old survey"));
+        assert!(title(&out).contains(" alpha · claude"));
+        // Narrow: below it.
+        let out = screen(&app, 70, 40);
+        assert!(out.contains("Read  src/lexer.rs"));
+        assert!(title(&out).starts_with('╭'));
     }
 
     #[test]

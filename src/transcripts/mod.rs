@@ -60,6 +60,9 @@ pub struct SubAgent {
     pub last_ts: Option<DateTime<Utc>>,
     /// It finished its task.
     pub ended: bool,
+    /// Its latest tool calls and replies, oldest first; kept only while it runs (Claude Code).
+    #[serde(default)]
+    pub activity: Vec<String>,
 }
 
 impl SubAgent {
@@ -141,6 +144,9 @@ pub(crate) struct FileState {
     /// Subagent description and type.
     #[serde(default)]
     meta: Option<(String, String)>,
+    /// A running subagent's latest tool calls and replies.
+    #[serde(default)]
+    activity: Vec<String>,
     /// Session id of the session that spawned this one as a subagent.
     #[serde(default)]
     parent: Option<String>,
@@ -211,6 +217,7 @@ impl Source {
                 agent_type,
                 last_ts: sub.last_ts,
                 ended: f.ended,
+                activity: f.activity.clone(),
             });
             t.last_ts = t.last_ts.max(sub.last_ts);
             for (day, models) in &sub.usage {

@@ -1565,6 +1565,7 @@ pub fn with_subagents(mut app: App) -> App {
             agent_type: "Explore".into(),
             last_ts: Some(now),
             ended,
+            activity: Vec::new(),
         });
     }
     app
