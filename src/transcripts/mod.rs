@@ -315,7 +315,9 @@ pub fn sources(claude_dir: Option<PathBuf>, state: &Path) -> Vec<Source> {
     ]
     .into_iter()
     .filter_map(|(kind, root)| {
-        let index = state.join(format!("{}-index-v3.json", kind.name()));
+        // v3 missed subagents that end with a handback tool; v4 rebuilds it once.
+        let _ = std::fs::remove_file(state.join(format!("{}-index-v3.json", kind.name())));
+        let index = state.join(format!("{}-index-v4.json", kind.name()));
         Some(Source::new(kind, &root?, index))
     })
     .collect()

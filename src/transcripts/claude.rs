@@ -80,7 +80,8 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
         }
         Some("user") => {
             note_common(t, v);
-            state.ended = false;
+            // A subagent's handback tool (`SubagentHandback`) ends its turn; any other user line continues it.
+            state.ended = v["toolEndsTurn"].as_bool() == Some(true);
             if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
                 return;
             }
@@ -332,6 +333,27 @@ mod tests {
         );
         assert!(s.ended);
         assert_eq!(s.last_ts, Some(ts("2026-10-08T10:04:00Z")));
+    }
+
+    #[test]
+    fn subagent_ends_with_a_handback_tool() {
+        let (tmp, claude, _) = setup(FIXTURE);
+        let sub = claude.join("projects/-home-u-alpha/sess-a/subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("agent-1.jsonl"),
+            concat!(
+                r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"Explore"},"timestamp":"2026-10-08T10:03:00.000Z"}"#,
+                "\n",
+                r#"{"type":"assistant","isSidechain":true,"message":{"id":"msg_s1","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_1","name":"SubagentHandback","input":{}}]},"timestamp":"2026-10-08T10:03:30.000Z"}"#,
+                "\n",
+                r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]},"toolEndsTurn":true,"timestamp":"2026-10-08T10:03:31.000Z"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let mut src = Source::new(Kind::Claude, &claude, tmp.path().join("index.json"));
+        assert!(src.refresh()[0].subagents[0].ended);
     }
 
     #[test]
