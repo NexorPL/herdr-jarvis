@@ -45,30 +45,14 @@ fn popup_wide(
 pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
     let pal = &app.palette;
     let mut lines: Vec<Line<'static>> = (form.fields.iter().enumerate())
-        .map(|(i, (label, value))| {
+        .flat_map(|(i, (label, value))| {
             let focused = i == form.focus;
             let style = if focused {
                 Style::new().fg(pal.accent).bold()
             } else {
                 Style::new().fg(pal.dim)
             };
-            let mut spans = vec![Span::styled(format!("{label:<12} "), style)];
-            if focused {
-                // The char under the cursor is drawn reversed; at the end, a reversed space.
-                let chars: Vec<char> = value.chars().collect();
-                let at = form.cursor.min(chars.len());
-                let under = chars.get(at).map_or(" ".into(), char::to_string);
-                spans.push(Span::raw(chars[..at].iter().collect::<String>()));
-                spans.push(Span::styled(under, Style::new().reversed()));
-                spans.push(Span::raw(
-                    chars[(at + 1).min(chars.len())..]
-                        .iter()
-                        .collect::<String>(),
-                ));
-            } else {
-                spans.push(Span::raw(value.clone()));
-            }
-            Line::from(spans)
+            field_lines(label, value, focused.then_some(form.cursor), style)
         })
         .collect();
     // A prompt can be long: nearly the screen's width and at least 8 rows to write in.
@@ -91,11 +75,57 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
         )));
     }
     let hint = match form.kind {
-        FormKind::Prompt { .. } => "Enter send · Esc cancel",
+        FormKind::Prompt { .. } => "Enter send · Shift+Enter new line · Esc cancel",
         _ => "Tab next field · Enter save · Esc cancel",
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
     popup_wide(f, area, width, &form.title, lines, pal);
+}
+
+/// A labelled field, a row per line of its value. With a `cursor` (a char index, past the end means
+/// at the end) the char under it is drawn reversed, a reversed space at a line's end.
+fn field_lines(
+    label: &str,
+    value: &str,
+    cursor: Option<usize>,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let chars: Vec<char> = value.chars().collect();
+    let cursor = cursor.map(|c| c.min(chars.len()));
+    let mut lines = Vec::new();
+    let mut spans = vec![Span::styled(format!("{label:<12} "), style)];
+    let mut run = String::new();
+    let flush = |run: &mut String, spans: &mut Vec<Span<'static>>| {
+        if !run.is_empty() {
+            spans.push(Span::raw(std::mem::take(run)));
+        }
+    };
+    for i in 0..=chars.len() {
+        let c = chars.get(i).copied();
+        if cursor == Some(i) {
+            flush(&mut run, &mut spans);
+            let under = match c {
+                Some('\n') | None => ' ',
+                Some(c) => c,
+            };
+            spans.push(Span::styled(under.to_string(), Style::new().reversed()));
+            // A char under the cursor is drawn; a line break or the end still has to happen.
+            if !matches!(c, Some('\n') | None) {
+                continue;
+            }
+        }
+        match c {
+            Some('\n') => {
+                flush(&mut run, &mut spans);
+                lines.push(Line::from(std::mem::take(&mut spans)));
+            }
+            Some(c) => run.push(c),
+            None => {}
+        }
+    }
+    flush(&mut run, &mut spans);
+    lines.push(Line::from(spans));
+    lines
 }
 
 pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
@@ -219,14 +249,31 @@ mod tests {
         let app = with_prompt(words + "END");
         let out = render(120, 30, |f| crate::ui::draw(f, &app));
         assert!(out.contains("END"));
-        assert!(out.contains("Enter send · Esc cancel"));
+        assert!(out.contains("Shift+Enter new line · Esc cancel"));
         // Nearly the whole width, not the 84 columns of other popups.
         let top = out.lines().find(|l| l.contains("prompt · alpha")).unwrap();
         assert_eq!(top.find('┌'), Some(2));
         // Longer than the screen: the end, where the cursor is, stays in view.
         let app = with_prompt("x".repeat(3000) + "END");
         let out = render(120, 20, |f| crate::ui::draw(f, &app));
-        assert!(out.contains("END") && out.contains("Enter send · Esc cancel"));
+        assert!(out.contains("END") && out.contains("Shift+Enter new line · Esc cancel"));
+    }
+
+    #[test]
+    fn prompt_lines_show_on_rows_of_their_own() {
+        let app = with_prompt("first line\nsecond line\n".into());
+        let out = render(120, 30, |f| crate::ui::draw(f, &app));
+        let row = |s: &str| out.lines().position(|l| l.contains(s)).unwrap();
+        assert_eq!(row("second line"), row("first line") + 1);
+        assert!(out.contains("Enter send · Shift+Enter new line · Esc cancel"));
+        // A cursor on a line break is a reversed space at the end of its line.
+        let lines = field_lines("prompt", "first line\nsecond line", Some(10), Style::new());
+        assert_eq!(lines.len(), 2);
+        let last = lines[0].spans.last().unwrap();
+        assert_eq!(
+            (last.content.as_ref(), last.style),
+            (" ", Style::new().reversed())
+        );
     }
 
     #[test]

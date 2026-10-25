@@ -16,7 +16,7 @@ use crate::transcripts::Source;
 use crate::transcripts::Thread;
 use crate::{collector, demo, model, paths, run, store};
 use app::{Action, App, Input, Screen, Tab, BOOT_TICKS};
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
 use std::fs::File;
@@ -363,7 +363,11 @@ fn event_loop(
             loop {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        app.on_key(key);
+                        let text_input = app.form.is_some() || app.search_editing;
+                        let next = || next_press(Duration::from_millis(50));
+                        for key in pasted_line_breaks(key, text_input, next)? {
+                            app.on_key(key);
+                        }
                     }
                 }
                 if !me.demo && send_typed(&mut app.action, &keys) {
@@ -473,6 +477,45 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+/// Pastes arrive as keys (crossterm reports no paste events on Windows): a line feed as Ctrl+Enter,
+/// a carriage return as a plain Enter, which would submit a form halfway and send the rest of the
+/// paste to Jarvis's shortcuts. In text input, an Enter that another key follows within the window
+/// of `next` is pasted: it becomes a line break, one with the line feed of a CR LF pair. Nobody
+/// types the next key that fast, so a typed Enter still submits.
+fn pasted_line_breaks(
+    mut key: KeyEvent,
+    text_input: bool,
+    mut next: impl FnMut() -> std::io::Result<Option<KeyEvent>>,
+) -> std::io::Result<Vec<KeyEvent>> {
+    let line_break = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+    let mut keys = Vec::new();
+    while text_input && key.code == KeyCode::Enter && key.modifiers.is_empty() {
+        let Some(following) = next()? else { break };
+        if !app::is_line_break(following) {
+            keys.push(line_break);
+        }
+        key = following;
+    }
+    keys.push(key);
+    Ok(keys)
+}
+
+/// The next key press within `within`, skipping releases and other events.
+fn next_press(within: Duration) -> std::io::Result<Option<KeyEvent>> {
+    let deadline = Instant::now() + within;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if !event::poll(left)? {
+            break;
+        }
+        if let Event::Key(k) = event::read()? {
+            if k.kind == KeyEventKind::Press {
+                return Ok(Some(k));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Which agent screens the reader thread keeps fresh.
@@ -660,6 +703,29 @@ mod tests {
     use super::*;
     use crate::ui::app::{sample_app, Screen, Tab};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn pasted_carriage_returns_become_line_breaks() {
+        let k = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        let (enter, lf) = (
+            k(KeyCode::Enter),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        );
+        let run = |first, text_input, following: Vec<KeyEvent>| {
+            let mut following = following.into_iter();
+            pasted_line_breaks(first, text_input, || Ok(following.next())).unwrap()
+        };
+        // Typed: nothing follows within the window, so Enter submits.
+        assert_eq!(run(enter, true, vec![]), [enter]);
+        // CR LF: one line break. A lone CR before more text, or before another CR: each one.
+        assert_eq!(run(enter, true, vec![lf]), [lf]);
+        let x = k(KeyCode::Char('x'));
+        assert_eq!(run(enter, true, vec![x]), [lf, x]);
+        assert_eq!(run(enter, true, vec![enter, x]), [lf, lf, x]);
+        // Outside text input, and for other keys, nothing waits.
+        assert_eq!(run(enter, false, vec![x]), [enter]);
+        assert_eq!(run(x, true, vec![enter]), [x]);
+    }
 
     #[test]
     fn draws_empty_model() {

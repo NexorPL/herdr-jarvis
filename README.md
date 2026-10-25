@@ -120,7 +120,7 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` `G` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`6` switch views |
 | Live, panels | `Enter` type into the selected agent, `Esc` stops · `g` go to its pane · arrows move between cards |
-| Agents, Live | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
+| Agents, Live | `p` send a prompt to the selected agent (`Shift+Enter`, `Alt+Enter` or `Ctrl+J` start a new line; pasted line breaks stay in the prompt); on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |

@@ -345,6 +345,16 @@ pub enum Node {
     More(usize),
 }
 
+/// A line break in text input, not a submit: Enter with Shift, Alt or Ctrl, or Ctrl+J. A pasted
+/// line feed arrives as Ctrl+Enter, and the event loop turns a pasted carriage return into one.
+pub fn is_line_break(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => !key.modifiers.is_empty(),
+        KeyCode::Char('j') => key.modifiers == KeyModifiers::CONTROL,
+        _ => false,
+    }
+}
+
 /// Angle of node `i` of `n`: first at the top, then clockwise.
 pub fn node_angle(i: usize, n: usize) -> f64 {
     FRAC_PI_2 - TAU * i as f64 / n.max(1) as f64
@@ -847,6 +857,9 @@ impl App {
     }
 
     fn on_search_key(&mut self, key: KeyEvent) {
+        if is_line_break(key) {
+            return;
+        }
         match key.code {
             KeyCode::Enter => self.search_editing = false,
             KeyCode::Esc => {
@@ -1415,6 +1428,16 @@ impl App {
     }
 
     fn on_form_key(&mut self, key: KeyEvent) {
+        if is_line_break(key) {
+            // Only a prompt has more than one line; elsewhere a pasted line break is dropped.
+            if let Some(form) =
+                (self.form.as_mut()).filter(|f| matches!(f.kind, FormKind::Prompt { .. }))
+            {
+                let newline = KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE);
+                line_edit::edit(&mut form.fields[form.focus].1, &mut form.cursor, newline);
+            }
+            return;
+        }
         match key.code {
             KeyCode::Esc => self.form = None,
             KeyCode::Enter => self.submit_form(),
@@ -1914,6 +1937,43 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn prompts_take_line_breaks_other_text_fields_ignore_them() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        app.selected_row = (app.visible_agents().iter())
+            .position(|(_, a)| a.pane.agent_status != AgentStatus::Blocked)
+            .unwrap();
+        key(&mut app, KeyCode::Char('p'));
+        let with = |c, m| KeyEvent::new(c, m);
+        chars(&mut app, "ab");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::SHIFT));
+        chars(&mut app, "cd");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::ALT));
+        // A pasted line break, and Ctrl+J where the terminal reports it as a letter.
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        app.on_key(with(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        chars(&mut app, "ef");
+        assert!(app.form.is_some());
+        key(&mut app, KeyCode::Enter);
+        match app.action.take() {
+            Some(Action::Prompt { text, .. }) => assert_eq!(text, "ab\ncd\n\n\nef"),
+            other => panic!("{other:?}"),
+        }
+        // A one-line field neither saves nor breaks the line.
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('a'));
+        chars(&mut app, "x");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        chars(&mut app, "y");
+        assert_eq!(app.form.as_ref().unwrap().fields[0].1, "xy");
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('/'));
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(app.search_editing);
     }
 
     fn idea(project: &App, i: usize, name: &str) -> Idea {
