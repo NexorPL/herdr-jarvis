@@ -191,12 +191,11 @@ pub fn confirm(f: &mut Frame, area: Rect, app: &App, c: &Confirm) {
 /// The blocked agent's screen, bottom lines first to go when it does not fit, with its live state.
 pub fn answer(f: &mut Frame, area: Rect, app: &App, a: &Answer) {
     let pal = &app.palette;
-    let screen: Vec<&str> = a.screen.trim_end().lines().collect();
+    let blank = |l: &Line| super::ansi::plain(l).trim().is_empty();
+    let shown = a.screen.len() - a.screen.iter().rev().take_while(|l| blank(l)).count();
+    let screen = &a.screen[..shown];
     let room = (area.height as usize).saturating_sub(5);
-    let mut lines: Vec<Line<'static>> = screen[screen.len().saturating_sub(room)..]
-        .iter()
-        .map(|l| Line::raw(l.to_string()))
-        .collect();
+    let mut lines = screen[screen.len().saturating_sub(room)..].to_vec();
     if screen.is_empty() {
         lines.push(Line::styled("reading the agent…", Style::new().fg(pal.dim)));
     }
@@ -274,6 +273,34 @@ mod tests {
             (last.content.as_ref(), last.style),
             (" ", Style::new().reversed())
         );
+    }
+
+    #[test]
+    fn answer_popup_shows_the_agent_screen_in_its_colors() {
+        let mut app = sample_app();
+        app.answer = Some(crate::ui::app::Answer {
+            pane_id: "w2:p1".into(),
+            agent: "beta".into(),
+            screen: crate::ui::ansi::lines("Allow rm?\n\x1b[31m❯ 1. Yes\x1b[0m\n  2. No\n\n\n"),
+        });
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        t.draw(|f| crate::ui::draw(f, &app)).unwrap();
+        let buf = t.backend().buffer();
+        let (x, y) = (0..20)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "❯")
+            .unwrap();
+        assert_eq!(buf[(x, y)].fg, Color::Indexed(1));
+        // Trailing blank lines are dropped: the hint follows the last screen line and a blank.
+        let row = |s: &str| {
+            (0..20u16).find(|&y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(s)
+            })
+        };
+        assert_eq!(row("keys go to the agent"), row("2. No").map(|r| r + 2));
     }
 
     #[test]

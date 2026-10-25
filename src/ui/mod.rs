@@ -287,12 +287,12 @@ fn event_loop(
         // The answer popup shows the agent's screen: read on open, after input and every 500 ms.
         if let Some(a) = app.answer.as_mut() {
             if a.screen.is_empty() || screen_read.elapsed() >= Duration::from_millis(500) {
-                a.screen = if me.demo {
+                a.screen = ansi::lines(&if me.demo {
                     demo::question().into()
                 } else {
-                    read_screen(&a.pane_id, "text")
+                    read_screen(&a.pane_id, "ansi")
                         .unwrap_or_else(|e| format!("could not read the agent: {e}"))
-                };
+                });
                 screen_read = Instant::now();
             }
         }

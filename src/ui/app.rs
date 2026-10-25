@@ -264,7 +264,8 @@ impl Input {
 pub struct Answer {
     pub pane_id: String,
     pub agent: String,
-    pub screen: String,
+    /// The agent's screen in its own colors.
+    pub screen: Vec<ratatui::text::Line<'static>>,
 }
 
 /// What a form saves on Enter. `editing` indexes the list it edits; `None` adds.
@@ -1122,7 +1123,7 @@ impl App {
             self.answer = Some(Answer {
                 pane_id: a.pane.pane_id.clone(),
                 agent,
-                screen: String::new(),
+                screen: Vec::new(),
             });
             return;
         }
