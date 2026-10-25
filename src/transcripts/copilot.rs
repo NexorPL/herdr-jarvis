@@ -50,6 +50,7 @@ pub(super) fn apply(state: &mut FileState, v: &Value) {
                 last_ts: ts,
                 ended: false,
                 activity: Vec::new(),
+                usage: Default::default(),
             });
         }
         Some("subagent.completed" | "subagent.failed") => {

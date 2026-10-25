@@ -80,7 +80,8 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
   feed of the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
   Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
-  subagent its session spawned, running first.
+  subagent its session spawned, running first, with its own tokens and estimated cost (also on the
+  bottom border of its Live card).
 - **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
   share the whole screen, in the agent's own colors. Each running subagent gets a smaller card beside
   its agent's screen (below it on a narrow card) with its latest tool calls and replies; Claude Code

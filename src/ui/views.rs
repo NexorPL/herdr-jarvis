@@ -238,6 +238,17 @@ const MIN_H: u16 = 7;
 /// Smallest subagent card: its borders and two log lines.
 const SUB_H: u16 = 4;
 
+/// A subagent's own tokens and estimated cost, if it used any.
+fn own_usage(app: &App, s: &SubAgent) -> Option<String> {
+    let mut cost = crate::pricing::Cost::default();
+    let mut tokens = 0;
+    for (model, u) in &s.usage {
+        tokens += u.total();
+        cost.add(app.pricing.cost(model, u));
+    }
+    (tokens > 0).then(|| format!("{} tok · {}", theme::tokens(tokens), theme::cost(&cost)))
+}
+
 /// Stacked cards of running subagents with the tail of their logs; those that do not fit fold into
 /// a last line.
 fn subagent_cards(f: &mut Frame, area: Rect, app: &App, pal: &Palette, subs: &[&SubAgent]) {
@@ -259,13 +270,17 @@ fn subagent_cards(f: &mut Frame, area: Rect, app: &App, pal: &Palette, subs: &[&
             s.description,
             theme::ago(s.last_ts, app.now)
         );
-        let block = Block::bordered()
+        let mut block = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::new().fg(pal.dim))
             .title(Span::styled(
                 theme::truncate(&title, rect.width.saturating_sub(4) as usize),
                 Style::new().fg(pal.accent),
             ));
+        // Its own tokens and cost on the bottom border, so a long description cannot cut them.
+        if let Some(usage) = own_usage(app, s) {
+            block = block.title_bottom(Line::from(format!(" {usage} ")).right_aligned());
+        }
         let inner = rect.height.saturating_sub(2) as usize;
         let log = &s.activity[s.activity.len().saturating_sub(inner)..];
         let lines: Vec<Line> = log.iter().map(|l| Line::from(l.as_str())).collect();
@@ -530,6 +545,10 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
                 Span::raw(format!("{} ", theme::truncate(&sub.description, 40))),
                 Span::styled(
                     format!("{} · {}", sub.agent_type, theme::ago(sub.last_ts, app.now)),
+                    Style::new().fg(pal.dim),
+                ),
+                Span::styled(
+                    own_usage(app, sub).map_or(String::new(), |u| format!(" · {u}")),
                     Style::new().fg(pal.dim),
                 ),
             ]));
@@ -1058,6 +1077,25 @@ mod tests {
             .unwrap();
         t.thread.subagents[0].activity =
             vec!["Grep  ChangeScene".into(), "Read  src/lexer.rs".into()];
+        let usage = crate::pricing::Usage {
+            input: 1_000_000,
+            output: 100_000,
+            ..Default::default()
+        };
+        t.thread.subagents[0].usage = [("claude-sonnet-4-5".to_string(), usage)].into();
+        // Its own tokens and cost: in the agent's side panel, and in its Live card's title.
+        app.screen = Screen::Global(Tab::Agents);
+        app.selected_row = (app.visible_agents().iter())
+            .position(|(_, a)| a.pane.pane_id == "w1:p1")
+            .unwrap();
+        let out = screen(&app, 200, 40);
+        let own = |out: &str| {
+            (out.lines()
+                .find(|l| l.contains("Find the lexer") && l.contains("Explore ·")))
+            .is_some_and(|l| l.contains("1.1M tok · ≈$"))
+        };
+        assert!(own(&out), "{out}");
+        app.selected_row = 0;
         app.screen = Screen::Global(Tab::Live);
         let title = |out: &str| -> String {
             (out.lines().find(|l| l.contains("Explore · Find the lexer")))
@@ -1070,6 +1108,11 @@ mod tests {
         assert!(out.contains("Read  src/lexer.rs"));
         assert!(!out.contains("Old survey"));
         assert!(title(&out).contains(" alpha · claude"));
+        // Its tokens and cost on the card's bottom border, clear of the description.
+        let bottom = (out.lines())
+            .find(|l| l.contains("1.1M tok · ≈$"))
+            .unwrap_or_default();
+        assert!(bottom.contains('╰') && !bottom.contains("Find the lexer"));
         // Narrow: below it.
         let out = screen(&app, 70, 40);
         assert!(out.contains("Read  src/lexer.rs"));

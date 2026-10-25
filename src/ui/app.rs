@@ -1597,6 +1597,7 @@ pub fn with_subagents(mut app: App) -> App {
             last_ts: Some(now),
             ended,
             activity: Vec::new(),
+            usage: Default::default(),
         });
     }
     app

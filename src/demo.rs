@@ -173,6 +173,7 @@ pub fn threads(now: DateTime<Utc>) -> Vec<Thread> {
                     last_ts: Some(now - Duration::minutes(ago)),
                     ended,
                     activity: Vec::new(),
+                    usage: Default::default(),
                 })
                 .collect();
             t
