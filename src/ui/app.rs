@@ -775,6 +775,16 @@ impl App {
         }
     }
 
+    /// Whether the next key goes into a text field, a form or the search, in `on_key`'s order.
+    pub fn takes_text(&self) -> bool {
+        let before = self.fatal.is_some() || !self.boot_done || self.show_help;
+        let other = self.confirm.is_some()
+            || self.typing.is_some()
+            || self.answer.is_some()
+            || self.picker.is_some();
+        !before && (self.form.is_some() || (!other && self.search_editing))
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if self.fatal.is_some() {
             self.quit = true;
@@ -858,10 +868,9 @@ impl App {
     }
 
     fn on_search_key(&mut self, key: KeyEvent) {
-        if is_line_break(key) {
-            return;
-        }
         match key.code {
+            // A pasted line break: a space, so the lines do not run together.
+            _ if is_line_break(key) => self.search.push(' '),
             KeyCode::Enter => self.search_editing = false,
             KeyCode::Esc => {
                 self.search_editing = false;
@@ -1429,15 +1438,20 @@ impl App {
     }
 
     fn on_form_key(&mut self, key: KeyEvent) {
-        if is_line_break(key) {
-            // Only a prompt has more than one line; elsewhere a pasted line break is dropped.
-            if let Some(form) =
-                (self.form.as_mut()).filter(|f| matches!(f.kind, FormKind::Prompt { .. }))
-            {
-                let newline = KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE);
-                line_edit::edit(&mut form.fields[form.focus].1, &mut form.cursor, newline);
-            }
+        let Some(form) = self.form.as_mut() else {
             return;
+        };
+        // A prompt keeps line breaks and tabs, pasted ones too; a one-line field turns a line
+        // break into a space, so pasted lines do not run together.
+        let prompt = matches!(form.kind, FormKind::Prompt { .. });
+        let typed = match key.code {
+            _ if is_line_break(key) => Some(if prompt { '\n' } else { ' ' }),
+            KeyCode::Tab if prompt => Some('\t'),
+            _ => None,
+        };
+        if let Some(c) = typed {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            return line_edit::edit(&mut form.fields[form.focus].1, &mut form.cursor, key);
         }
         match key.code {
             KeyCode::Esc => self.form = None,
@@ -1958,24 +1972,34 @@ mod tests {
         app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
         app.on_key(with(KeyCode::Char('j'), KeyModifiers::CONTROL));
         chars(&mut app, "ef");
-        assert!(app.form.is_some());
+        // A pasted tab stays in the prompt instead of moving to a next field.
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "g");
+        assert!(app.form.is_some() && app.takes_text());
         key(&mut app, KeyCode::Enter);
         match app.action.take() {
-            Some(Action::Prompt { text, .. }) => assert_eq!(text, "ab\ncd\n\n\nef"),
+            Some(Action::Prompt { text, .. }) => assert_eq!(text, "ab\ncd\n\n\nef\tg"),
             other => panic!("{other:?}"),
         }
-        // A one-line field neither saves nor breaks the line.
+        assert!(!app.takes_text());
+        // A one-line field neither saves nor breaks the line: the break becomes a space.
         key(&mut app, KeyCode::Char('I'));
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('a'));
         chars(&mut app, "x");
         app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
         chars(&mut app, "y");
-        assert_eq!(app.form.as_ref().unwrap().fields[0].1, "xy");
+        assert_eq!(app.form.as_ref().unwrap().fields[0].1, "x y");
         key(&mut app, KeyCode::Esc);
         key(&mut app, KeyCode::Char('/'));
+        assert!(app.takes_text());
+        chars(&mut app, "a");
         app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        chars(&mut app, "b");
         assert!(app.search_editing);
+        assert_eq!(app.search, "a b");
+        app.show_help = true;
+        assert!(!app.takes_text());
     }
 
     fn idea(project: &App, i: usize, name: &str) -> Idea {

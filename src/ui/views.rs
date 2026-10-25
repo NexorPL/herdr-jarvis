@@ -240,13 +240,14 @@ const SUB_H: u16 = 4;
 
 /// A subagent's own tokens and estimated cost, if it used any.
 fn own_usage(app: &App, s: &SubAgent) -> Option<String> {
-    let mut cost = crate::pricing::Cost::default();
-    let mut tokens = 0;
-    for (model, u) in &s.usage {
-        tokens += u.total();
-        cost.add(app.pricing.cost(model, u));
-    }
-    (tokens > 0).then(|| format!("{} tok · {}", theme::tokens(tokens), theme::cost(&cost)))
+    let (usage, cost) = app.pricing.sum(&s.usage);
+    (usage.total() > 0).then(|| {
+        format!(
+            "{} tok · {}",
+            theme::tokens(usage.total()),
+            theme::cost(&cost)
+        )
+    })
 }
 
 /// Stacked cards of running subagents with the tail of their logs; those that do not fit fold into
@@ -533,7 +534,10 @@ fn agents(f: &mut Frame, area: Rect, app: &App, pal: &Palette) {
     let subs = app.subagents(a);
     if !subs.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::styled("subagents", Style::new().fg(pal.dim)));
+        lines.push(Line::styled(
+            "subagents · tokens and cost of each run",
+            Style::new().fg(pal.dim),
+        ));
         for (sub, running) in subs.iter().take(8) {
             let (glyph, color) = if *running {
                 ("●", pal.accent)

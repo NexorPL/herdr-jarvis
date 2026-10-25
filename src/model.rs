@@ -119,14 +119,7 @@ pub fn build(
         .iter()
         .map(|t| {
             let p = resolver.resolve(t.cwd.as_deref().unwrap_or(""));
-            let mut usage = Usage::default();
-            let mut cost = Cost::default();
-            for models in t.usage.values() {
-                for (model, u) in models {
-                    usage += *u;
-                    cost.add(pricing.cost(model, u));
-                }
-            }
+            let (usage, cost) = pricing.sum(t.usage.values().flatten());
             ThreadRow {
                 live_pane: snap
                     .agents

@@ -30,6 +30,8 @@ fn popup_wide(
         h,
     );
     // Taller than the screen: the end shows, where the cursor and the hints are.
+    // ponytail: a cursor moved up a prompt taller than the screen can leave the view; scroll to
+    // its row if prompts that long get edited.
     let scroll = rows.saturating_sub(h.saturating_sub(2));
     f.render_widget(Clear, rect);
     f.render_widget(
@@ -44,6 +46,7 @@ fn popup_wide(
 
 pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
     let pal = &app.palette;
+    let prompt = matches!(form.kind, FormKind::Prompt { .. });
     let mut lines: Vec<Line<'static>> = (form.fields.iter().enumerate())
         .flat_map(|(i, (label, value))| {
             let focused = i == form.focus;
@@ -52,11 +55,12 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
             } else {
                 Style::new().fg(pal.dim)
             };
+            // A prompt is one field, named in the title: its text takes the whole width.
+            let label = if prompt { "" } else { label };
             field_lines(label, value, focused.then_some(form.cursor), style)
         })
         .collect();
     // A prompt can be long: nearly the screen's width and at least 8 rows to write in.
-    let prompt = matches!(form.kind, FormKind::Prompt { .. });
     let width = if prompt {
         area.width.saturating_sub(4)
     } else {
@@ -75,14 +79,23 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
         )));
     }
     let hint = match form.kind {
-        FormKind::Prompt { .. } => "Enter send · Shift+Enter new line · Esc cancel",
-        _ => "Tab next field · Enter save · Esc cancel",
+        FormKind::Prompt { .. } => format!("Enter send · {NEW_LINE} new line · Esc cancel"),
+        _ => "Tab next field · Enter save · Esc cancel".into(),
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
     popup_wide(f, area, width, &form.title, lines, pal);
 }
 
-/// A labelled field, a row per line of its value. With a `cursor` (a char index, past the end means
+/// The new-line key a prompt shows. Windows reports Shift+Enter; elsewhere a terminal sends it as a
+/// plain Enter unless asked for more. Ctrl+J works everywhere, Shift+Enter and Alt+Enter where
+/// they arrive.
+const NEW_LINE: &str = if cfg!(windows) {
+    "Shift+Enter"
+} else {
+    "Ctrl+J"
+};
+
+/// A labelled field (no label: none), a row per line of its value, tabs as four spaces. With a `cursor` (a char index, past the end means
 /// at the end) the char under it is drawn reversed, a reversed space at a line's end.
 fn field_lines(
     label: &str,
@@ -93,7 +106,10 @@ fn field_lines(
     let chars: Vec<char> = value.chars().collect();
     let cursor = cursor.map(|c| c.min(chars.len()));
     let mut lines = Vec::new();
-    let mut spans = vec![Span::styled(format!("{label:<12} "), style)];
+    let mut spans = Vec::new();
+    if !label.is_empty() {
+        spans.push(Span::styled(format!("{label:<12} "), style));
+    }
     let mut run = String::new();
     let flush = |run: &mut String, spans: &mut Vec<Span<'static>>| {
         if !run.is_empty() {
@@ -105,7 +121,7 @@ fn field_lines(
         if cursor == Some(i) {
             flush(&mut run, &mut spans);
             let under = match c {
-                Some('\n') | None => ' ',
+                Some('\n' | '\t') | None => ' ',
                 Some(c) => c,
             };
             spans.push(Span::styled(under.to_string(), Style::new().reversed()));
@@ -119,6 +135,7 @@ fn field_lines(
                 flush(&mut run, &mut spans);
                 lines.push(Line::from(std::mem::take(&mut spans)));
             }
+            Some('\t') => run.push_str("    "),
             Some(c) => run.push(c),
             None => {}
         }
@@ -248,14 +265,14 @@ mod tests {
         let app = with_prompt(words + "END");
         let out = render(120, 30, |f| crate::ui::draw(f, &app));
         assert!(out.contains("END"));
-        assert!(out.contains("Shift+Enter new line · Esc cancel"));
+        assert!(out.contains(&format!("{NEW_LINE} new line · Esc cancel")));
         // Nearly the whole width, not the 84 columns of other popups.
         let top = out.lines().find(|l| l.contains("prompt · alpha")).unwrap();
         assert_eq!(top.find('┌'), Some(2));
         // Longer than the screen: the end, where the cursor is, stays in view.
         let app = with_prompt("x".repeat(3000) + "END");
         let out = render(120, 20, |f| crate::ui::draw(f, &app));
-        assert!(out.contains("END") && out.contains("Shift+Enter new line · Esc cancel"));
+        assert!(out.contains("END") && out.contains(&format!("{NEW_LINE} new line · Esc cancel")));
     }
 
     #[test]
@@ -264,7 +281,19 @@ mod tests {
         let out = render(120, 30, |f| crate::ui::draw(f, &app));
         let row = |s: &str| out.lines().position(|l| l.contains(s)).unwrap();
         assert_eq!(row("second line"), row("first line") + 1);
-        assert!(out.contains("Enter send · Shift+Enter new line · Esc cancel"));
+        assert!(out.contains(&format!("Enter send · {NEW_LINE} new line · Esc cancel")));
+        // No label column in a prompt: every line starts at the border.
+        assert!(out.contains("│first line") && out.contains("│second line"));
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(
+            text(&field_lines("", "a\tb", None, Style::new())[0]),
+            "a    b"
+        );
         // A cursor on a line break is a reversed space at the end of its line.
         let lines = field_lines("prompt", "first line\nsecond line", Some(10), Style::new());
         assert_eq!(lines.len(), 2);

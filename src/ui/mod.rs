@@ -243,6 +243,8 @@ fn event_loop(
     let mut resolver = Resolver::default();
     let mut dirty = true;
     let mut screen_read = Instant::now();
+    // When the last key press arrived, to tell a pasted Enter from a typed one.
+    let mut last_press: Option<Instant> = None;
     // Results of agent starts and failed keys, which run in threads of their own.
     let (started_tx, started) = mpsc::channel::<String>();
     let read_plan = Arc::new(Mutex::new(ReadPlan::default()));
@@ -290,7 +292,7 @@ fn event_loop(
                 a.screen = ansi::lines(&if me.demo {
                     demo::question().into()
                 } else {
-                    read_screen(&a.pane_id, "ansi")
+                    read_screen(&a.pane_id)
                         .unwrap_or_else(|e| format!("could not read the agent: {e}"))
                 });
                 screen_read = Instant::now();
@@ -363,11 +365,12 @@ fn event_loop(
             loop {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        let text_input = app.form.is_some() || app.search_editing;
-                        let next = || next_press(Duration::from_millis(50));
-                        for key in pasted_line_breaks(key, text_input, next)? {
+                        let after_key = last_press.is_some_and(|t| t.elapsed() < PASTE_GAP);
+                        let next = || next_press(PASTE_WAIT);
+                        for key in pasted_line_breaks(key, app.takes_text(), after_key, next)? {
                             app.on_key(key);
                         }
+                        last_press = Some(Instant::now());
                     }
                 }
                 if !me.demo && send_typed(&mut app.action, &keys) {
@@ -479,30 +482,47 @@ fn event_loop(
     Ok(())
 }
 
+/// The keys of a paste come at most 1.3 ms apart (measured: 40 lines pasted through herdr on
+/// Windows, median 60 µs); nobody types two keys within these.
+const PASTE_GAP: Duration = Duration::from_millis(5);
+const PASTE_WAIT: Duration = Duration::from_millis(20);
+
 /// Pastes arrive as keys (crossterm reports no paste events on Windows): a line feed as Ctrl+Enter,
 /// a carriage return as a plain Enter, which would submit a form halfway and send the rest of the
-/// paste to Jarvis's shortcuts. In text input, an Enter that another key follows within the window
-/// of `next` is pasted: it becomes a line break, one with the line feed of a CR LF pair. Nobody
-/// types the next key that fast, so a typed Enter still submits.
+/// paste to Jarvis's shortcuts. In text input, an Enter that comes right `after_key` or that
+/// another key follows within the window of `next` is pasted: it becomes a line break, one with the
+/// line feed of a CR LF pair. A typed Enter has neither, so it still submits.
+/// ponytail: a paste that reaches Jarvis in pieces further apart than the window (a slow remote
+/// link) can still submit at a break; bracketed paste would settle it where crossterm has it.
 fn pasted_line_breaks(
     mut key: KeyEvent,
     text_input: bool,
+    after_key: bool,
     mut next: impl FnMut() -> std::io::Result<Option<KeyEvent>>,
 ) -> std::io::Result<Vec<KeyEvent>> {
     let line_break = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
     let mut keys = Vec::new();
+    let mut pasted = after_key;
     while text_input && key.code == KeyCode::Enter && key.modifiers.is_empty() {
-        let Some(following) = next()? else { break };
-        if !app::is_line_break(following) {
-            keys.push(line_break);
+        match next()? {
+            Some(following) => {
+                if !app::is_line_break(following) {
+                    keys.push(line_break);
+                }
+                key = following;
+                pasted = true;
+            }
+            // The last key of a paste.
+            None if pasted => key = line_break,
+            None => break,
         }
-        key = following;
     }
     keys.push(key);
     Ok(keys)
 }
 
-/// The next key press within `within`, skipping releases and other events.
+/// The next key press within `within`, skipping releases and other events. Those other events are
+/// dropped: ratatui resizes on each draw, and mouse, focus and paste events are not enabled.
 fn next_press(within: Duration) -> std::io::Result<Option<KeyEvent>> {
     let deadline = Instant::now() + within;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
@@ -539,8 +559,8 @@ fn spawn_reader(plan: Arc<Mutex<ReadPlan>>, typed: Arc<AtomicBool>) -> Receiver<
                 Err(_) => return,
             };
             let read = |pane: &str| {
-                let text = read_screen(pane, "ansi")
-                    .unwrap_or_else(|e| format!("could not read the agent: {e}"));
+                let text =
+                    read_screen(pane).unwrap_or_else(|e| format!("could not read the agent: {e}"));
                 tx.send((pane.to_string(), text)).is_ok()
             };
             if let Some(pane) = &typing {
@@ -650,8 +670,9 @@ fn spawn_agent(agent: &str, cwd: &str, name: &str) -> anyhow::Result<()> {
 }
 
 /// The visible terminal text of the agent in `pane_id`.
-fn read_screen(pane_id: &str, format: &str) -> anyhow::Result<String> {
-    let params = serde_json::json!({"target": pane_id, "source": "visible", "format": format});
+/// An agent's visible screen with its colors (`ansi`).
+fn read_screen(pane_id: &str) -> anyhow::Result<String> {
+    let params = serde_json::json!({"target": pane_id, "source": "visible", "format": "ansi"});
     let result = herdr::client::request(&herdr::socket_path(), "agent.read", params)?;
     Ok(result["read"]["text"]
         .as_str()
@@ -713,7 +734,7 @@ mod tests {
         );
         let run = |first, text_input, following: Vec<KeyEvent>| {
             let mut following = following.into_iter();
-            pasted_line_breaks(first, text_input, || Ok(following.next())).unwrap()
+            pasted_line_breaks(first, text_input, false, || Ok(following.next())).unwrap()
         };
         // Typed: nothing follows within the window, so Enter submits.
         assert_eq!(run(enter, true, vec![]), [enter]);
@@ -725,6 +746,13 @@ mod tests {
         // Outside text input, and for other keys, nothing waits.
         assert_eq!(run(enter, false, vec![x]), [enter]);
         assert_eq!(run(x, true, vec![enter]), [x]);
+        // The last key of a paste comes right after the one before it: a break, not a submit.
+        let last = |following: Vec<KeyEvent>| {
+            let mut following = following.into_iter();
+            pasted_line_breaks(enter, true, true, || Ok(following.next())).unwrap()
+        };
+        assert_eq!(last(vec![]), [lf]);
+        assert_eq!(last(vec![lf]), [lf]);
     }
 
     #[test]
