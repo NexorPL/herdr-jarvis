@@ -80,7 +80,8 @@ For a linked checkout (`herdr plugin link`): stop the processes the same way, th
   feed of the latest events at the bottom.
 - **Project drill-down** (`Enter` on a node): tabs Agents, Threads, Timeline, Usage, Ideas and Live for that project.
   Running subagents sit under their agent in the Agents list; the side panel of an agent lists every
-  subagent its session spawned, running first.
+  subagent its session spawned, running first, with its own tokens and estimated cost (also on the
+  bottom border of its Live card).
 - **Live**: a card per agent with the latest lines of its screen, refreshed every second; the cards
   share the whole screen, in the agent's own colors. Each running subagent gets a smaller card beside
   its agent's screen (below it on a narrow card) with its latest tool calls and replies; Claude Code
@@ -120,7 +121,7 @@ usage once it closes. Other agents appear in the tree and the timeline, without 
 | Core | arrows / `hjkl` move · `1`–`9` select · `Enter` open project · `A` `T` `L` `U` `I` `G` all-project views |
 | Lists | `↑↓` / `jk` move · `Enter` jump to the agent's pane (Jarvis stays open in its tab), or copy the resume command (`claude --resume <id>`, `codex resume <id>`…) for a finished thread · `Tab` / `1`–`6` switch views |
 | Live, panels | `Enter` type into the selected agent, `Esc` stops · `g` go to its pane · arrows move between cards |
-| Agents, Live | `p` send a prompt to the selected agent; on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
+| Agents, Live | `p` send a prompt to the selected agent (`Ctrl+J`, or `Shift+Enter` on Windows, starts a new line; `Home`, `End` and `↑↓` work per line; pasted line breaks and tabs stay in the prompt); on a blocked agent, `p` shows its screen and sends your keys to it (`1`–`9`, `↑↓`, `Enter`, `Tab`, typing) to answer its question · `Esc` closes |
 | Filters | `/` search threads and ideas · `s` state · `w` time range (timeline) · `f` project (all-project views) |
 | Ideas tab | `a` add · `e` / `Enter` edit · `d` delete · `Space` status todo → doing → done · `s` status filter · `c` show or fold done ideas |
 | Run | `x` on a project screen or an agent row opens the target picker · `Space` select · `a` all · `Enter` run · then `t` one tab per target or `s` side by side · `n` new · `e` edit · `d` delete |

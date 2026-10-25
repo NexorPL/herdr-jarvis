@@ -264,7 +264,8 @@ impl Input {
 pub struct Answer {
     pub pane_id: String,
     pub agent: String,
-    pub screen: String,
+    /// The agent's screen in its own colors.
+    pub screen: Vec<ratatui::text::Line<'static>>,
 }
 
 /// What a form saves on Enter. `editing` indexes the list it edits; `None` adds.
@@ -343,6 +344,16 @@ pub enum Node {
     Project(usize),
     /// Overflow node with the number of projects it stands for.
     More(usize),
+}
+
+/// A line break in text input, not a submit: Enter with Shift, Alt or Ctrl, or Ctrl+J. A pasted
+/// line feed arrives as Ctrl+Enter, and the event loop turns a pasted carriage return into one.
+pub fn is_line_break(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => !key.modifiers.is_empty(),
+        KeyCode::Char('j') => key.modifiers == KeyModifiers::CONTROL,
+        _ => false,
+    }
 }
 
 /// Angle of node `i` of `n`: first at the top, then clockwise.
@@ -764,6 +775,16 @@ impl App {
         }
     }
 
+    /// Whether the next key goes into a text field, a form or the search, in `on_key`'s order.
+    pub fn takes_text(&self) -> bool {
+        let before = self.fatal.is_some() || !self.boot_done || self.show_help;
+        let other = self.confirm.is_some()
+            || self.typing.is_some()
+            || self.answer.is_some()
+            || self.picker.is_some();
+        !before && (self.form.is_some() || (!other && self.search_editing))
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if self.fatal.is_some() {
             self.quit = true;
@@ -848,6 +869,8 @@ impl App {
 
     fn on_search_key(&mut self, key: KeyEvent) {
         match key.code {
+            // A pasted line break: a space, so the lines do not run together.
+            _ if is_line_break(key) => self.search.push(' '),
             KeyCode::Enter => self.search_editing = false,
             KeyCode::Esc => {
                 self.search_editing = false;
@@ -1109,7 +1132,7 @@ impl App {
             self.answer = Some(Answer {
                 pane_id: a.pane.pane_id.clone(),
                 agent,
-                screen: String::new(),
+                screen: Vec::new(),
             });
             return;
         }
@@ -1415,6 +1438,21 @@ impl App {
     }
 
     fn on_form_key(&mut self, key: KeyEvent) {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        // A prompt keeps line breaks and tabs, pasted ones too; a one-line field turns a line
+        // break into a space, so pasted lines do not run together.
+        let prompt = matches!(form.kind, FormKind::Prompt { .. });
+        let typed = match key.code {
+            _ if is_line_break(key) => Some(if prompt { '\n' } else { ' ' }),
+            KeyCode::Tab if prompt => Some('\t'),
+            _ => None,
+        };
+        if let Some(c) = typed {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            return line_edit::edit(&mut form.fields[form.focus].1, &mut form.cursor, key);
+        }
         match key.code {
             KeyCode::Esc => self.form = None,
             KeyCode::Enter => self.submit_form(),
@@ -1573,6 +1611,7 @@ pub fn with_subagents(mut app: App) -> App {
             last_ts: Some(now),
             ended,
             activity: Vec::new(),
+            usage: Default::default(),
         });
     }
     app
@@ -1914,6 +1953,53 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn prompts_take_line_breaks_other_text_fields_ignore_them() {
+        let mut app = sample_app();
+        key(&mut app, KeyCode::Char('A'));
+        app.selected_row = (app.visible_agents().iter())
+            .position(|(_, a)| a.pane.agent_status != AgentStatus::Blocked)
+            .unwrap();
+        key(&mut app, KeyCode::Char('p'));
+        let with = |c, m| KeyEvent::new(c, m);
+        chars(&mut app, "ab");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::SHIFT));
+        chars(&mut app, "cd");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::ALT));
+        // A pasted line break, and Ctrl+J where the terminal reports it as a letter.
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        app.on_key(with(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        chars(&mut app, "ef");
+        // A pasted tab stays in the prompt instead of moving to a next field.
+        key(&mut app, KeyCode::Tab);
+        chars(&mut app, "g");
+        assert!(app.form.is_some() && app.takes_text());
+        key(&mut app, KeyCode::Enter);
+        match app.action.take() {
+            Some(Action::Prompt { text, .. }) => assert_eq!(text, "ab\ncd\n\n\nef\tg"),
+            other => panic!("{other:?}"),
+        }
+        assert!(!app.takes_text());
+        // A one-line field neither saves nor breaks the line: the break becomes a space.
+        key(&mut app, KeyCode::Char('I'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('a'));
+        chars(&mut app, "x");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        chars(&mut app, "y");
+        assert_eq!(app.form.as_ref().unwrap().fields[0].1, "x y");
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('/'));
+        assert!(app.takes_text());
+        chars(&mut app, "a");
+        app.on_key(with(KeyCode::Enter, KeyModifiers::CONTROL));
+        chars(&mut app, "b");
+        assert!(app.search_editing);
+        assert_eq!(app.search, "a b");
+        app.show_help = true;
+        assert!(!app.takes_text());
     }
 
     fn idea(project: &App, i: usize, name: &str) -> Idea {

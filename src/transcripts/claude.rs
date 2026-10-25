@@ -362,6 +362,9 @@ mod tests {
         let day = &t.usage[&local_day(ts("2026-10-08T10:00:05Z"))];
         assert_eq!(day["claude-sonnet-5"].input, 5 + 7);
         assert_eq!(day["claude-sonnet-5"].output, 50 + 70);
+        // The subagent keeps its own share too, per model.
+        let own = t.subagents[0].usage["claude-sonnet-5"];
+        assert_eq!((own.input, own.output), (7, 70));
         // No meta file and no end_turn: listed, still running.
         let s = &t.subagents[0];
         assert_eq!(

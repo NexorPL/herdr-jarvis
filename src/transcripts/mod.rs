@@ -63,6 +63,9 @@ pub struct SubAgent {
     /// Its latest tool calls and replies, oldest first; kept only while it runs (Claude Code).
     #[serde(default)]
     pub activity: Vec<String>,
+    /// Its own tokens per model, all days together; the parent's usage includes them.
+    #[serde(default)]
+    pub usage: BTreeMap<String, Usage>,
 }
 
 impl SubAgent {
@@ -217,6 +220,10 @@ impl Source {
                 continue;
             };
             let (description, agent_type) = f.meta.clone().unwrap_or_default();
+            let mut usage: BTreeMap<String, Usage> = BTreeMap::new();
+            for (model, u) in sub.usage.values().flatten() {
+                *usage.entry(model.clone()).or_default() += *u;
+            }
             t.subagents.push(SubAgent {
                 id: sub.session_id.clone(),
                 description,
@@ -224,6 +231,7 @@ impl Source {
                 last_ts: sub.last_ts,
                 ended: f.ended,
                 activity: f.activity.clone(),
+                usage,
             });
             t.last_ts = t.last_ts.max(sub.last_ts);
             for (day, models) in &sub.usage {

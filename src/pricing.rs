@@ -107,6 +107,19 @@ impl Pricing {
             + u.cache_write_1h as f64 * p.cache_write_1h;
         Some(micro / 1_000_000.0)
     }
+
+    /// Total tokens and estimated cost of usage per model.
+    pub fn sum<'a>(
+        &self,
+        by_model: impl IntoIterator<Item = (&'a String, &'a Usage)>,
+    ) -> (Usage, Cost) {
+        let (mut total, mut cost) = (Usage::default(), Cost::default());
+        for (model, u) in by_model {
+            total += *u;
+            cost.add(self.cost(model, u));
+        }
+        (total, cost)
+    }
 }
 
 /// A summed cost; `partial` is set when some part had no known price.

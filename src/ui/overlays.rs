@@ -30,6 +30,8 @@ fn popup_wide(
         h,
     );
     // Taller than the screen: the end shows, where the cursor and the hints are.
+    // ponytail: a cursor moved up a prompt taller than the screen can leave the view; scroll to
+    // its row if prompts that long get edited.
     let scroll = rows.saturating_sub(h.saturating_sub(2));
     f.render_widget(Clear, rect);
     f.render_widget(
@@ -44,35 +46,21 @@ fn popup_wide(
 
 pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
     let pal = &app.palette;
+    let prompt = matches!(form.kind, FormKind::Prompt { .. });
     let mut lines: Vec<Line<'static>> = (form.fields.iter().enumerate())
-        .map(|(i, (label, value))| {
+        .flat_map(|(i, (label, value))| {
             let focused = i == form.focus;
             let style = if focused {
                 Style::new().fg(pal.accent).bold()
             } else {
                 Style::new().fg(pal.dim)
             };
-            let mut spans = vec![Span::styled(format!("{label:<12} "), style)];
-            if focused {
-                // The char under the cursor is drawn reversed; at the end, a reversed space.
-                let chars: Vec<char> = value.chars().collect();
-                let at = form.cursor.min(chars.len());
-                let under = chars.get(at).map_or(" ".into(), char::to_string);
-                spans.push(Span::raw(chars[..at].iter().collect::<String>()));
-                spans.push(Span::styled(under, Style::new().reversed()));
-                spans.push(Span::raw(
-                    chars[(at + 1).min(chars.len())..]
-                        .iter()
-                        .collect::<String>(),
-                ));
-            } else {
-                spans.push(Span::raw(value.clone()));
-            }
-            Line::from(spans)
+            // A prompt is one field, named in the title: its text takes the whole width.
+            let label = if prompt { "" } else { label };
+            field_lines(label, value, focused.then_some(form.cursor), style)
         })
         .collect();
     // A prompt can be long: nearly the screen's width and at least 8 rows to write in.
-    let prompt = matches!(form.kind, FormKind::Prompt { .. });
     let width = if prompt {
         area.width.saturating_sub(4)
     } else {
@@ -91,11 +79,70 @@ pub fn form(f: &mut Frame, area: Rect, app: &App, form: &Form) {
         )));
     }
     let hint = match form.kind {
-        FormKind::Prompt { .. } => "Enter send · Esc cancel",
-        _ => "Tab next field · Enter save · Esc cancel",
+        FormKind::Prompt { .. } => format!("Enter send · {NEW_LINE} new line · Esc cancel"),
+        _ => "Tab next field · Enter save · Esc cancel".into(),
     };
     lines.push(Line::from(Span::styled(hint, Style::new().fg(pal.dim))));
     popup_wide(f, area, width, &form.title, lines, pal);
+}
+
+/// The new-line key a prompt shows. Windows reports Shift+Enter; elsewhere a terminal sends it as a
+/// plain Enter unless asked for more. Ctrl+J works everywhere, Shift+Enter and Alt+Enter where
+/// they arrive.
+const NEW_LINE: &str = if cfg!(windows) {
+    "Shift+Enter"
+} else {
+    "Ctrl+J"
+};
+
+/// A labelled field (no label: none), a row per line of its value, tabs as four spaces. With a `cursor` (a char index, past the end means
+/// at the end) the char under it is drawn reversed, a reversed space at a line's end.
+fn field_lines(
+    label: &str,
+    value: &str,
+    cursor: Option<usize>,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let chars: Vec<char> = value.chars().collect();
+    let cursor = cursor.map(|c| c.min(chars.len()));
+    let mut lines = Vec::new();
+    let mut spans = Vec::new();
+    if !label.is_empty() {
+        spans.push(Span::styled(format!("{label:<12} "), style));
+    }
+    let mut run = String::new();
+    let flush = |run: &mut String, spans: &mut Vec<Span<'static>>| {
+        if !run.is_empty() {
+            spans.push(Span::raw(std::mem::take(run)));
+        }
+    };
+    for i in 0..=chars.len() {
+        let c = chars.get(i).copied();
+        if cursor == Some(i) {
+            flush(&mut run, &mut spans);
+            let under = match c {
+                Some('\n' | '\t') | None => ' ',
+                Some(c) => c,
+            };
+            spans.push(Span::styled(under.to_string(), Style::new().reversed()));
+            // A char under the cursor is drawn; a line break or the end still has to happen.
+            if !matches!(c, Some('\n') | None) {
+                continue;
+            }
+        }
+        match c {
+            Some('\n') => {
+                flush(&mut run, &mut spans);
+                lines.push(Line::from(std::mem::take(&mut spans)));
+            }
+            Some('\t') => run.push_str("    "),
+            Some(c) => run.push(c),
+            None => {}
+        }
+    }
+    flush(&mut run, &mut spans);
+    lines.push(Line::from(spans));
+    lines
 }
 
 pub fn picker(f: &mut Frame, area: Rect, app: &App, p: &Picker) {
@@ -161,12 +208,11 @@ pub fn confirm(f: &mut Frame, area: Rect, app: &App, c: &Confirm) {
 /// The blocked agent's screen, bottom lines first to go when it does not fit, with its live state.
 pub fn answer(f: &mut Frame, area: Rect, app: &App, a: &Answer) {
     let pal = &app.palette;
-    let screen: Vec<&str> = a.screen.trim_end().lines().collect();
+    let blank = |l: &Line| super::ansi::plain(l).trim().is_empty();
+    let shown = a.screen.len() - a.screen.iter().rev().take_while(|l| blank(l)).count();
+    let screen = &a.screen[..shown];
     let room = (area.height as usize).saturating_sub(5);
-    let mut lines: Vec<Line<'static>> = screen[screen.len().saturating_sub(room)..]
-        .iter()
-        .map(|l| Line::raw(l.to_string()))
-        .collect();
+    let mut lines = screen[screen.len().saturating_sub(room)..].to_vec();
     if screen.is_empty() {
         lines.push(Line::styled("reading the agent…", Style::new().fg(pal.dim)));
     }
@@ -219,14 +265,71 @@ mod tests {
         let app = with_prompt(words + "END");
         let out = render(120, 30, |f| crate::ui::draw(f, &app));
         assert!(out.contains("END"));
-        assert!(out.contains("Enter send · Esc cancel"));
+        assert!(out.contains(&format!("{NEW_LINE} new line · Esc cancel")));
         // Nearly the whole width, not the 84 columns of other popups.
         let top = out.lines().find(|l| l.contains("prompt · alpha")).unwrap();
         assert_eq!(top.find('┌'), Some(2));
         // Longer than the screen: the end, where the cursor is, stays in view.
         let app = with_prompt("x".repeat(3000) + "END");
         let out = render(120, 20, |f| crate::ui::draw(f, &app));
-        assert!(out.contains("END") && out.contains("Enter send · Esc cancel"));
+        assert!(out.contains("END") && out.contains(&format!("{NEW_LINE} new line · Esc cancel")));
+    }
+
+    #[test]
+    fn prompt_lines_show_on_rows_of_their_own() {
+        let app = with_prompt("first line\nsecond line\n".into());
+        let out = render(120, 30, |f| crate::ui::draw(f, &app));
+        let row = |s: &str| out.lines().position(|l| l.contains(s)).unwrap();
+        assert_eq!(row("second line"), row("first line") + 1);
+        assert!(out.contains(&format!("Enter send · {NEW_LINE} new line · Esc cancel")));
+        // No label column in a prompt: every line starts at the border.
+        assert!(out.contains("│first line") && out.contains("│second line"));
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(
+            text(&field_lines("", "a\tb", None, Style::new())[0]),
+            "a    b"
+        );
+        // A cursor on a line break is a reversed space at the end of its line.
+        let lines = field_lines("prompt", "first line\nsecond line", Some(10), Style::new());
+        assert_eq!(lines.len(), 2);
+        let last = lines[0].spans.last().unwrap();
+        assert_eq!(
+            (last.content.as_ref(), last.style),
+            (" ", Style::new().reversed())
+        );
+    }
+
+    #[test]
+    fn answer_popup_shows_the_agent_screen_in_its_colors() {
+        let mut app = sample_app();
+        app.answer = Some(crate::ui::app::Answer {
+            pane_id: "w2:p1".into(),
+            agent: "beta".into(),
+            screen: crate::ui::ansi::lines("Allow rm?\n\x1b[31m❯ 1. Yes\x1b[0m\n  2. No\n\n\n"),
+        });
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        t.draw(|f| crate::ui::draw(f, &app)).unwrap();
+        let buf = t.backend().buffer();
+        let (x, y) = (0..20)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "❯")
+            .unwrap();
+        assert_eq!(buf[(x, y)].fg, Color::Indexed(1));
+        // Trailing blank lines are dropped: the hint follows the last screen line and a blank.
+        let row = |s: &str| {
+            (0..20u16).find(|&y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(s)
+            })
+        };
+        assert_eq!(row("keys go to the agent"), row("2. No").map(|r| r + 2));
     }
 
     #[test]
