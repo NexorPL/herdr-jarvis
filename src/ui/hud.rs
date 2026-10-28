@@ -63,11 +63,12 @@ pub fn status_bar(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(msg.clone(), Style::new().fg(color)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-    let clock = app
-        .now
-        .with_timezone(&chrono::Local)
-        .format("%H:%M ")
-        .to_string();
+    // The version, so an update is easy to confirm.
+    let clock = format!(
+        "v{}  {}",
+        env!("CARGO_PKG_VERSION"),
+        app.now.with_timezone(&chrono::Local).format("%H:%M ")
+    );
     f.render_widget(
         Paragraph::new(clock)
             .alignment(Alignment::Right)
@@ -688,6 +689,7 @@ mod tests {
         assert!(out.contains("▲ 1 blocked"));
         assert!(out.contains("today ≈$4.00"));
         assert!(out.contains("herdr offline"));
+        assert!(out.contains(concat!("v", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
