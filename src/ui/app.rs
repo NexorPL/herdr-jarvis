@@ -573,9 +573,13 @@ impl App {
         }
     }
 
+    /// The core animates only while someone looks at it: herdr processes every frame, seen or not.
     pub fn animating(&self) -> bool {
         !self.boot_done
-            || (self.animation != Animation::Off && self.screen == Screen::Core && !self.compact)
+            || (self.animation != Animation::Off
+                && self.looking
+                && self.screen == Screen::Core
+                && !self.compact)
     }
 
     pub fn tab(&self) -> Tab {
@@ -1681,6 +1685,21 @@ mod tests {
         app.set_looking(false);
         assert_eq!(app.last_left, app.now);
         assert!(!app.is_new(agent(&app, AgentStatus::Done)));
+    }
+
+    #[test]
+    fn core_animates_only_while_looked_at() {
+        let mut app = sample_app();
+        app.screen = Screen::Core;
+        assert!(!app.animating());
+        app.set_looking(true);
+        assert!(app.animating());
+        app.animation = Animation::Off;
+        assert!(!app.animating());
+        // The boot plays wherever the focus is.
+        app.set_looking(false);
+        app.boot_done = false;
+        assert!(app.animating());
     }
 
     #[test]

@@ -6,7 +6,7 @@ pub mod overlays;
 pub mod theme;
 pub mod views;
 
-use crate::config::Config;
+use crate::config::{Animation, Config};
 use crate::events::{self, Record};
 use crate::herdr::{self, Snapshot, WatchMsg};
 use crate::log::log;
@@ -317,7 +317,11 @@ fn event_loop(
             dirty = true;
         }
         app.now = chrono::Utc::now();
-        app.tick = (start.elapsed().as_millis() / 33) as u64;
+        // A still clock draws the same frame, which sends herdr nothing; motion keeps its speed
+        // whatever the frame rate.
+        if app.animating() {
+            app.tick = (start.elapsed().as_millis() / 33) as u64;
+        }
         if !app.boot_done && app.tick >= BOOT_TICKS {
             app.boot_done = true;
         }
@@ -346,7 +350,7 @@ fn event_loop(
             }
         }
         pass.lap("model");
-        app.set_looking(snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
+        app.set_looking(me.demo || snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
         let label = app.tab_label();
         if !me.tab.is_empty() && label != tab_label {
             let params = serde_json::json!({"tab_id": me.tab, "label": label});
@@ -361,9 +365,16 @@ fn event_loop(
         app.compact = size.width < 90 || size.height < 28;
         terminal.draw(|f| draw(f, app))?;
         pass.lap("draw");
-        // Typing into a card redraws as fast as animating, so its screen follows the keys.
-        let fast = app.animating() || app.typing.is_some();
-        let timeout = Duration::from_millis(if fast { 33 } else { 250 });
+        // Typing into a card redraws fast, so its screen follows the keys. The core animates at 15
+        // frames a second, 5 reduced: under load herdr fell seconds behind 30, and a key's frame
+        // waited behind them.
+        let timeout = match (app.typing.is_some(), app.animating(), app.animation) {
+            (true, _, _) => 33,
+            (_, true, Animation::Reduced) => 200,
+            (_, true, _) => 66,
+            _ => 250,
+        };
+        let timeout = Duration::from_millis(timeout);
         let ready = event::poll(timeout)?;
         pass.wait();
         if ready {
