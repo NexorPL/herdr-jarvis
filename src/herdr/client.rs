@@ -20,8 +20,21 @@ impl std::fmt::Display for ProtocolMismatch {
 
 impl std::error::Error for ProtocolMismatch {}
 
-/// Sends one request on its own connection and returns the response's `result`.
+/// Sends one request on its own connection and returns the response's `result`. A slow answer is
+/// logged: the UI waits on some of them.
 pub fn request(path: &Path, method: &str, params: Value) -> Result<Value> {
+    let start = std::time::Instant::now();
+    let result = send(path, method, params);
+    if start.elapsed() >= std::time::Duration::from_millis(100) {
+        crate::log::log(format!(
+            "herdr: {method} took {}ms",
+            start.elapsed().as_millis()
+        ));
+    }
+    result
+}
+
+fn send(path: &Path, method: &str, params: Value) -> Result<Value> {
     let mut stream =
         transport::connect(path).with_context(|| format!("connect {}", path.display()))?;
     let line = json!({"id": "jarvis", "method": method, "params": params}).to_string() + "\n";

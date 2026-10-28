@@ -255,6 +255,7 @@ fn event_loop(
     };
     let keys = spawn_sender(started_tx.clone(), typed.clone());
     while !app.quit {
+        let mut pass = Stopwatch::new();
         if let Some(msg) = started.try_iter().last() {
             app.status = Some(msg);
         }
@@ -298,6 +299,7 @@ fn event_loop(
                 screen_read = Instant::now();
             }
         }
+        pass.lap("screens");
         for msg in watch.try_iter() {
             match msg {
                 WatchMsg::Snapshot(s) => {
@@ -343,6 +345,7 @@ fn event_loop(
                 app.status = Some("the agent you were typing into is gone".into());
             }
         }
+        pass.lap("model");
         app.set_looking(snap.focused_pane_id.as_deref() == Some(me.pane.as_str()));
         let label = app.tab_label();
         if !me.tab.is_empty() && label != tab_label {
@@ -353,13 +356,17 @@ fn event_loop(
             // Not retried on failure: one attempt per label change.
             tab_label = label;
         }
+        pass.lap("tab");
         let size = terminal.size()?;
         app.compact = size.width < 90 || size.height < 28;
         terminal.draw(|f| draw(f, app))?;
+        pass.lap("draw");
         // Typing into a card redraws as fast as animating, so its screen follows the keys.
         let fast = app.animating() || app.typing.is_some();
         let timeout = Duration::from_millis(if fast { 33 } else { 250 });
-        if event::poll(timeout)? {
+        let ready = event::poll(timeout)?;
+        pass.wait();
+        if ready {
             // Every key already waiting is handled before the next draw; keys typed into an agent
             // go straight to the sender thread, other actions are handled below one at a time.
             loop {
@@ -383,6 +390,7 @@ fn event_loop(
                 }
             }
         }
+        pass.lap("keys");
         if me.demo
             && matches!(
                 app.action,
@@ -478,8 +486,56 @@ fn event_loop(
             }
             None => {}
         }
+        pass.lap("action");
+        if let Some(slow) = pass.slow(SLOW_PASS) {
+            log(format!("tui: slow pass in {:?}: {slow}", app.screen));
+        }
     }
     Ok(())
+}
+
+/// A loop pass this long, not counting the wait for keys, is a lag the user feels.
+const SLOW_PASS: Duration = Duration::from_millis(100);
+
+/// Times the stages of one event-loop pass, so a lag leaves its cause in `jarvis.log`.
+struct Stopwatch {
+    last: Instant,
+    busy: Duration,
+    stages: Vec<(&'static str, Duration)>,
+}
+
+impl Stopwatch {
+    fn new() -> Stopwatch {
+        Stopwatch {
+            last: Instant::now(),
+            busy: Duration::ZERO,
+            stages: Vec::new(),
+        }
+    }
+
+    fn lap(&mut self, stage: &'static str) {
+        let took = self.last.elapsed();
+        self.busy += took;
+        self.stages.push((stage, took));
+        self.last = Instant::now();
+    }
+
+    /// The time since the last lap was spent waiting for keys: it is no lag.
+    fn wait(&mut self) {
+        self.last = Instant::now();
+    }
+
+    /// The stages, when the busy time reached `limit`.
+    fn slow(&self, limit: Duration) -> Option<String> {
+        (self.busy >= limit).then(|| {
+            let stages = (self.stages.iter()).map(|(s, d)| format!("{s} {}ms", d.as_millis()));
+            format!(
+                "{}ms ({})",
+                self.busy.as_millis(),
+                stages.collect::<Vec<_>>().join(", ")
+            )
+        })
+    }
 }
 
 /// The keys of a paste come at most 1.3 ms apart (measured: 40 lines pasted through herdr on
@@ -753,6 +809,19 @@ mod tests {
         };
         assert_eq!(last(vec![]), [lf]);
         assert_eq!(last(vec![lf]), [lf]);
+    }
+
+    #[test]
+    fn stopwatch_leaves_the_wait_for_keys_out() {
+        let mut pass = Stopwatch::new();
+        pass.lap("model");
+        std::thread::sleep(Duration::from_millis(30));
+        pass.wait();
+        assert_eq!(pass.slow(Duration::from_millis(20)), None);
+        std::thread::sleep(Duration::from_millis(30));
+        pass.lap("draw");
+        let slow = pass.slow(Duration::from_millis(20)).unwrap();
+        assert!(slow.contains("(model 0ms, draw "), "{slow}");
     }
 
     #[test]
